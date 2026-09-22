@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { isValidDictionaryWord } from "@/app/lib/vocabulary";
 
 export async function POST(req: Request) {
   try {
@@ -21,6 +22,14 @@ export async function POST(req: Request) {
     }
 
     const rawInput = word2.trim().toLowerCase();
+
+    // Prevent cheating: entered word must be a real recognized English word
+    if (!isValidDictionaryWord(rawInput)) {
+      return NextResponse.json(
+        { error: `"${rawInput}" is not a recognized English dictionary word.` },
+        { status: 400 }
+      );
+    }
 
     const apiKey = process.env.TYPESAFE_API_KEY;
     if (!apiKey) {
@@ -64,7 +73,7 @@ export async function POST(req: Request) {
     if (!response.ok) {
       const errorText = await response.text();
       return NextResponse.json(
-        { error: `TypeSafe API Error (${response.status}): ${errorText}` },
+        { error: `Evaluation Error (${response.status}): ${errorText}` },
         { status: response.status }
       );
     }
