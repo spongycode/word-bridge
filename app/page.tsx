@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { WordPair } from "./domains";
 import { calculateGameScore, ScoreBreakdown } from "./lib/scoring";
 import { getAblyRealtime } from "./lib/ably";
@@ -83,6 +83,14 @@ export default function GamePage() {
     const handleScrollLock = () => {
       if (window.scrollY !== 0) {
         window.scrollTo(0, 0);
+      }
+      if (scrollRef.current) {
+        scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+        setTimeout(() => {
+          if (scrollRef.current) {
+            scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+          }
+        }, 100);
       }
     };
 
@@ -345,20 +353,24 @@ export default function GamePage() {
   const currentWord = history.length > 0 ? history[history.length - 1].word : "";
   const targetWord = targetPair?.target || "";
 
-  useEffect(() => {
-    const scrollToBottom = () => {
-      if (scrollRef.current) {
-        scrollRef.current.scrollTo({
-          top: scrollRef.current.scrollHeight,
-          behavior: "smooth",
-        });
-      }
-    };
+  const scrollToBottom = useCallback((smooth = false) => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTo({
+        top: scrollRef.current.scrollHeight,
+        behavior: smooth ? "smooth" : "auto",
+      });
+    }
+  }, []);
 
-    scrollToBottom();
-    const t = setTimeout(scrollToBottom, 50);
-    return () => clearTimeout(t);
-  }, [history]);
+  useEffect(() => {
+    scrollToBottom(true);
+    const t1 = setTimeout(() => scrollToBottom(false), 50);
+    const t2 = setTimeout(() => scrollToBottom(false), 150);
+    return () => {
+      clearTimeout(t1);
+      clearTimeout(t2);
+    };
+  }, [history, scrollToBottom]);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const sanitized = e.target.value.replace(/[^a-zA-Z]/g, "");
@@ -820,31 +832,33 @@ Score: ${finalScore.totalScore.toLocaleString()} pts • Cohesion: ${finalScore.
               <div className="bg-zinc-900/40 border border-zinc-800/40 rounded-xl p-2.5 sm:p-3.5">
                 <div className="flex items-center justify-between gap-2 sm:gap-3">
                   {/* Start Word */}
-                  <div className="flex-1 bg-zinc-950/60 border border-zinc-800/30 rounded-lg sm:rounded-xl p-2 sm:p-2.5 text-center">
-                    <div className="flex items-center justify-center gap-1 mb-0.5">
+                  <button
+                    type="button"
+                    onClick={() => handleToggleDefinition(targetPair.source)}
+                    className={`flex-1 rounded-lg sm:rounded-xl p-2 sm:p-2.5 text-center transition cursor-pointer select-none border active:scale-[0.98] ${
+                      activeDefinition?.word === targetPair.source.toLowerCase()
+                        ? "bg-zinc-900/90 border-zinc-600 shadow-sm"
+                        : "bg-zinc-950/60 border-zinc-800/40 hover:border-zinc-700 hover:bg-zinc-900/40"
+                    }`}
+                    title={`Click for definition of "${targetPair.source}"`}
+                    aria-label={`Definition for ${targetPair.source}`}
+                  >
+                    <div className="flex items-center justify-center gap-1 mb-0.5 pointer-events-none">
                       <span className="text-[9px] sm:text-[10px] font-mono uppercase text-zinc-400">Start</span>
-                      <button
-                        type="button"
-                        onClick={() => handleToggleDefinition(targetPair.source)}
-                        className={`text-[9px] sm:text-[10px] w-3.5 h-3.5 sm:w-4 sm:h-4 rounded-full flex items-center justify-center font-mono transition border ${
+                      <span
+                        className={`text-[9px] sm:text-[10px] w-3.5 h-3.5 sm:w-4 sm:h-4 rounded-full flex items-center justify-center font-mono border transition ${
                           activeDefinition?.word === targetPair.source.toLowerCase()
                             ? "bg-zinc-800 text-zinc-100 border-zinc-600"
-                            : "text-zinc-500 hover:text-zinc-300 border-zinc-800 hover:border-zinc-700 bg-zinc-900/60"
+                            : "text-zinc-500 border-zinc-800 bg-zinc-900/60"
                         }`}
-                        title={`View definition of "${targetPair.source}"`}
-                        aria-label={`View definition of ${targetPair.source}`}
                       >
                         ?
-                      </button>
+                      </span>
                     </div>
-                    <span
-                      onClick={() => handleToggleDefinition(targetPair.source)}
-                      className="text-base sm:text-xl font-bold tracking-tight text-white capitalize cursor-pointer hover:underline underline-offset-4 decoration-zinc-600 transition truncate block"
-                      title={`Click for definition of "${targetPair.source}"`}
-                    >
+                    <span className="text-base sm:text-xl font-bold tracking-tight text-white capitalize truncate block pointer-events-none">
                       {targetPair.source}
                     </span>
-                  </div>
+                  </button>
 
                   {/* Divider Arrow */}
                   <div className="flex items-center justify-center text-zinc-600 px-0.5 sm:px-1 shrink-0">
@@ -852,31 +866,33 @@ Score: ${finalScore.totalScore.toLocaleString()} pts • Cohesion: ${finalScore.
                   </div>
 
                   {/* Target Word */}
-                  <div className="flex-1 bg-zinc-950/60 border border-zinc-800/30 rounded-lg sm:rounded-xl p-2 sm:p-2.5 text-center">
-                    <div className="flex items-center justify-center gap-1 mb-0.5">
+                  <button
+                    type="button"
+                    onClick={() => handleToggleDefinition(targetPair.target)}
+                    className={`flex-1 rounded-lg sm:rounded-xl p-2 sm:p-2.5 text-center transition cursor-pointer select-none border active:scale-[0.98] ${
+                      activeDefinition?.word === targetPair.target.toLowerCase()
+                        ? "bg-zinc-900/90 border-zinc-600 shadow-sm"
+                        : "bg-zinc-950/60 border-zinc-800/40 hover:border-zinc-700 hover:bg-zinc-900/40"
+                    }`}
+                    title={`Click for definition of "${targetPair.target}"`}
+                    aria-label={`Definition for ${targetPair.target}`}
+                  >
+                    <div className="flex items-center justify-center gap-1 mb-0.5 pointer-events-none">
                       <span className="text-[9px] sm:text-[10px] font-mono uppercase text-zinc-400">Target</span>
-                      <button
-                        type="button"
-                        onClick={() => handleToggleDefinition(targetPair.target)}
-                        className={`text-[9px] sm:text-[10px] w-3.5 h-3.5 sm:w-4 sm:h-4 rounded-full flex items-center justify-center font-mono transition border ${
+                      <span
+                        className={`text-[9px] sm:text-[10px] w-3.5 h-3.5 sm:w-4 sm:h-4 rounded-full flex items-center justify-center font-mono border transition ${
                           activeDefinition?.word === targetPair.target.toLowerCase()
                             ? "bg-zinc-800 text-zinc-100 border-zinc-600"
-                            : "text-zinc-500 hover:text-zinc-300 border-zinc-800 hover:border-zinc-700 bg-zinc-900/60"
+                            : "text-zinc-500 border-zinc-800 bg-zinc-900/60"
                         }`}
-                        title={`View definition of "${targetPair.target}"`}
-                        aria-label={`View definition of ${targetPair.target}`}
                       >
                         ?
-                      </button>
+                      </span>
                     </div>
-                    <span
-                      onClick={() => handleToggleDefinition(targetPair.target)}
-                      className="text-base sm:text-xl font-bold tracking-tight text-white capitalize cursor-pointer hover:underline underline-offset-4 decoration-zinc-600 transition truncate block"
-                      title={`Click for definition of "${targetPair.target}"`}
-                    >
+                    <span className="text-base sm:text-xl font-bold tracking-tight text-white capitalize truncate block pointer-events-none">
                       {targetPair.target}
                     </span>
-                  </div>
+                  </button>
                 </div>
 
                 {/* Word Definition Drawer */}
@@ -1114,6 +1130,14 @@ Score: ${finalScore.totalScore.toLocaleString()} pts • Cohesion: ${finalScore.
                         if (typeof window !== "undefined") {
                           setTimeout(() => window.scrollTo(0, 0), 30);
                         }
+                        scrollToBottom(false);
+                        setTimeout(() => scrollToBottom(false), 80);
+                        setTimeout(() => scrollToBottom(false), 200);
+                        setTimeout(() => scrollToBottom(false), 350);
+                      }}
+                      onClick={() => {
+                        scrollToBottom(false);
+                        setTimeout(() => scrollToBottom(false), 100);
                       }}
                       autoFocus
                       className="flex-1 px-3.5 py-2.5 sm:py-3 bg-zinc-900/60 border border-zinc-800/50 rounded-xl text-white placeholder-zinc-600 focus:outline-none focus:border-zinc-700 font-medium text-sm sm:text-base transition-colors"
