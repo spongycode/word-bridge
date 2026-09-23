@@ -39,6 +39,7 @@ export default function GamePage() {
   const [loadingPair, setLoadingPair] = useState(false);
   const [failedAttempts, setFailedAttempts] = useState(0);
   const [copied, setCopied] = useState(false);
+  const [codeCopied, setCodeCopied] = useState(false);
 
   // Feature 1: Semantic Compass (Heatmap / Proximity)
   const [targetProximity, setTargetProximity] = useState<number>(0);
@@ -534,6 +535,12 @@ export default function GamePage() {
     }
   };
 
+  const copyRoomCode = () => {
+    navigator.clipboard.writeText(roomCode);
+    setCodeCopied(true);
+    setTimeout(() => setCodeCopied(false), 2500);
+  };
+
   const currentWord = history.length > 0 ? history[history.length - 1].word : "";
   const targetWord = targetPair?.target || "";
 
@@ -860,9 +867,18 @@ Score: ${finalScore.totalScore.toLocaleString()} pts • Cohesion: ${finalScore.
                 <span className="text-[10px] uppercase font-mono tracking-widest text-zinc-400 block">
                   Room Code
                 </span>
-                <span className="text-4xl font-bold text-white font-mono tracking-widest block">
-                  {roomCode}
-                </span>
+                <div className="flex items-center justify-center gap-3">
+                  <span className="text-4xl font-bold text-white font-mono tracking-widest">
+                    {roomCode}
+                  </span>
+                  <button
+                    onClick={copyRoomCode}
+                    className="px-2.5 py-1.5 rounded-lg text-[11px] font-mono border border-zinc-700 text-zinc-300 hover:text-white hover:border-zinc-500 transition"
+                    aria-label="Copy room code"
+                  >
+                    {codeCopied ? "Copied" : "Copy"}
+                  </button>
+                </div>
                 <span className="text-xs text-zinc-400 block pt-1">
                   Share this code with your opponent
                 </span>
