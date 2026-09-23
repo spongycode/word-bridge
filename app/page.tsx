@@ -54,7 +54,7 @@ export default function GamePage() {
   const [opponent, setOpponent] = useState<OpponentState | null>(null);
 
   const [feedback, setFeedback] = useState<{
-    type: "success" | "error" | "info";
+    type: "success" | "warning" | "error";
     message: string;
     score?: number;
     threshold?: number;
@@ -363,7 +363,7 @@ export default function GamePage() {
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const sanitized = e.target.value.replace(/[^a-zA-Z]/g, "");
     setNextWord(sanitized);
-    if (feedback?.type === "error") setFeedback(null);
+    if (feedback) setFeedback(null);
   };
 
   const candidateLower = nextWord.trim().toLowerCase();
@@ -408,8 +408,8 @@ export default function GamePage() {
       if (pct < 70) {
         setFailedAttempts((prev) => prev + 1);
         setFeedback({
-          type: "error",
-          message: `Too distant from "${currentWord}". Requires ≥ 70% relatedness (-150 pts).`,
+          type: "warning",
+          message: `Too distant from "${currentWord}"`,
           score: pct,
           threshold: 70,
         });
@@ -501,8 +501,8 @@ export default function GamePage() {
         });
       } else {
         setFeedback({
-          type: "info",
-          message: `Step accepted (${pct}%). Distance to target: ${newProximityPct}%.`,
+          type: "success",
+          message: `Step accepted • Target: ${newProximityPct}%`,
           score: pct,
         });
       }
@@ -995,14 +995,24 @@ Score: ${finalScore.totalScore.toLocaleString()} pts • Cohesion: ${finalScore.
               {feedback && (
                 <div
                   className={`p-2 sm:p-2.5 rounded-xl text-xs font-mono border flex items-center justify-between gap-3 ${
-                    feedback.type === "error"
-                      ? "bg-zinc-900 border-zinc-800 text-rose-400"
-                      : "bg-zinc-900 border-zinc-800 text-zinc-200"
+                    feedback.type === "success"
+                      ? "bg-emerald-950/30 border-emerald-900/40 text-emerald-400"
+                      : feedback.type === "warning"
+                      ? "bg-amber-950/30 border-amber-900/40 text-amber-400"
+                      : "bg-rose-950/30 border-rose-900/40 text-rose-400"
                   }`}
                 >
                   <span className="truncate">{feedback.message}</span>
                   {feedback.score !== undefined && (
-                    <span className="font-bold text-white px-2 py-0.5 rounded bg-zinc-800 shrink-0">
+                    <span
+                      className={`font-bold px-2 py-0.5 rounded shrink-0 ${
+                        feedback.type === "success"
+                          ? "bg-emerald-900/40 text-emerald-300"
+                          : feedback.type === "warning"
+                          ? "bg-amber-900/40 text-amber-300"
+                          : "bg-rose-900/40 text-rose-300"
+                      }`}
+                    >
                       {feedback.score}%
                     </span>
                   )}

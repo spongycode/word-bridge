@@ -96,7 +96,7 @@ export async function POST(req: Request) {
     const isRealWordProb = data?.answers?.is_real_word?.noul ?? 1.0;
     if (isRealWordProb < 0.50) {
       return NextResponse.json(
-        { error: `"${rawInput}" is not recognized as a valid standalone English word.` },
+        { error: `"${rawInput}" is not a recognized word.` },
         { status: 400 }
       );
     }
