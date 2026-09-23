@@ -863,24 +863,20 @@ Score: ${finalScore.totalScore.toLocaleString()} pts • Cohesion: ${finalScore.
 
           {lobbyStatus === "hosting" ? (
             <div className="space-y-6 text-center">
-              <div className="p-6 bg-zinc-900 border border-zinc-800 rounded-xl space-y-2">
+              <div
+                onClick={copyRoomCode}
+                role="button"
+                aria-label="Tap to copy room code"
+                className="p-6 bg-zinc-900 border border-zinc-800 rounded-xl space-y-2 cursor-pointer select-none transition hover:border-zinc-700 active:scale-[0.99]"
+              >
                 <span className="text-[10px] uppercase font-mono tracking-widest text-zinc-400 block">
                   Room Code
                 </span>
-                <div className="flex items-center justify-center gap-3">
-                  <span className="text-4xl font-bold text-white font-mono tracking-widest">
-                    {roomCode}
-                  </span>
-                  <button
-                    onClick={copyRoomCode}
-                    className="px-2.5 py-1.5 rounded-lg text-[11px] font-mono border border-zinc-700 text-zinc-300 hover:text-white hover:border-zinc-500 transition"
-                    aria-label="Copy room code"
-                  >
-                    {codeCopied ? "Copied" : "Copy"}
-                  </button>
-                </div>
+                <span className="text-4xl font-bold text-white font-mono tracking-widest block">
+                  {roomCode}
+                </span>
                 <span className="text-xs text-zinc-400 block pt-1">
-                  Share this code with your opponent
+                  {codeCopied ? "Code copied!" : "Tap to copy"}
                 </span>
               </div>
 
