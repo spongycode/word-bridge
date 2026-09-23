@@ -48,6 +48,7 @@ export default function GamePage() {
   const [myClientId, setMyClientId] = useState<string>("");
   const [roomCode, setRoomCode] = useState<string>("");
   const [joinCodeInput, setJoinCodeInput] = useState<string>("");
+  const [pendingJoinCode, setPendingJoinCode] = useState<string | null>(null);
   const [isHost, setIsHost] = useState(false);
   const [lobbyStatus, setLobbyStatus] = useState<string>("idle");
   const [pendingGuest, setPendingGuest] = useState<{ clientId: string; name: string } | null>(null);
@@ -118,6 +119,22 @@ export default function GamePage() {
       }
     };
   }, []);
+
+  // Deep-link join: ?join=CODE in the URL auto-starts the room join flow
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const code = params.get("join")?.trim().toUpperCase();
+    if (code) setPendingJoinCode(code);
+  }, []);
+
+  useEffect(() => {
+    if (!pendingJoinCode || !myClientId) return;
+    window.history.replaceState({}, "", window.location.pathname);
+    setJoinCodeInput(pendingJoinCode);
+    setPendingJoinCode(null);
+    handleJoinRoom(pendingJoinCode);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingJoinCode, myClientId]);
 
   const handleToggleDefinition = async (word: string) => {
     const clean = word.trim().toLowerCase();
@@ -318,8 +335,8 @@ export default function GamePage() {
     setTimeout(() => inputRef.current?.focus(), 150);
   };
 
-  const handleJoinRoom = () => {
-    const code = joinCodeInput.trim().toUpperCase();
+  const handleJoinRoom = (codeArg?: string) => {
+    const code = (codeArg ?? joinCodeInput).trim().toUpperCase();
     if (!code) return;
 
     setRoomCode(code);
@@ -498,6 +515,22 @@ export default function GamePage() {
         clientId: myClientId,
         finalHistory: historyRef.current.map((s) => s.word),
       });
+    }
+  };
+
+  const shareJoinLink = async () => {
+    const url = `${window.location.origin}${window.location.pathname}?join=${roomCode}`;
+    const text = `Join my WordBridge game! Room ${roomCode}`;
+    try {
+      if (navigator.share) {
+        await navigator.share({ title: "WordBridge", text, url });
+      } else {
+        await navigator.clipboard.writeText(url);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2500);
+      }
+    } catch {
+      // user dismissed the native share sheet — nothing to do
     }
   };
 
@@ -835,6 +868,13 @@ Score: ${finalScore.totalScore.toLocaleString()} pts • Cohesion: ${finalScore.
                 </span>
               </div>
 
+              <button
+                onClick={shareJoinLink}
+                className="w-full py-2.5 bg-zinc-900 hover:bg-zinc-800 text-white font-medium rounded-lg text-sm transition border border-zinc-800"
+              >
+                {copied ? "Link Copied!" : "Share Join Link"}
+              </button>
+
               {pendingGuest ? (
                 <div className="p-4 border border-zinc-700 bg-zinc-900 rounded-xl text-left space-y-3">
                   <div className="flex items-center justify-between">
@@ -896,7 +936,7 @@ Score: ${finalScore.totalScore.toLocaleString()} pts • Cohesion: ${finalScore.
                   className="w-full px-4 py-3 bg-zinc-900 border border-zinc-800 rounded-xl text-center text-white placeholder-zinc-600 uppercase tracking-widest font-mono text-base font-bold focus:outline-none focus:border-zinc-500"
                 />
                 <button
-                  onClick={handleJoinRoom}
+                  onClick={() => handleJoinRoom()}
                   disabled={!joinCodeInput.trim()}
                   className="w-full py-3 bg-zinc-900 hover:bg-zinc-800 disabled:opacity-40 text-white font-medium rounded-xl text-sm transition border border-zinc-800"
                 >
