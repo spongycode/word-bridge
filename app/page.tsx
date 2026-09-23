@@ -76,6 +76,8 @@ export default function GamePage() {
   const rematchRequestedRef = useRef(false);
   const rematchOpponentRef = useRef(false);
   const rematchStartedRef = useRef(false);
+  // Mirrors history so channel subscribers can read the latest path at game over
+  const historyRef = useRef<StepRecord[]>([]);
 
   // Word definition tooltip/card state
   const [activeDefinition, setActiveDefinition] = useState<{
@@ -254,6 +256,7 @@ export default function GamePage() {
 
         if (msg.data.hasWon) {
           setOpponentWon(true);
+          revealMyPath();
         }
       }
     });
@@ -273,6 +276,15 @@ export default function GamePage() {
     channel.subscribe("rematch_start", (msg: any) => {
       if (isHostRef.current || msg.data.clientId === myClientId) return;
       startRematchRound(msg.data.targetPair as WordPair);
+    });
+
+    // Feature 2: Symmetric path reveal at game over (loser shares their list with the winner)
+    channel.subscribe("reveal_path", (msg: any) => {
+      if (msg.data.clientId === myClientId) return;
+      setOpponent((prev) => ({
+        ...(prev ?? { clientId: msg.data.clientId, name: "Opponent", steps: [], hasWon: false }),
+        finalHistory: msg.data.finalHistory,
+      }));
     });
   };
 
@@ -372,6 +384,7 @@ export default function GamePage() {
 
         if (msg.data.hasWon) {
           setOpponentWon(true);
+          revealMyPath();
         }
       }
     });
@@ -391,6 +404,15 @@ export default function GamePage() {
     channel.subscribe("rematch_start", (msg: any) => {
       if (isHostRef.current || msg.data.clientId === myClientId) return;
       startRematchRound(msg.data.targetPair as WordPair);
+    });
+
+    // Feature 2: Symmetric path reveal at game over (loser shares their list with the winner)
+    channel.subscribe("reveal_path", (msg: any) => {
+      if (msg.data.clientId === myClientId) return;
+      setOpponent((prev) => ({
+        ...(prev ?? { clientId: msg.data.clientId, name: "Opponent", steps: [], hasWon: false }),
+        finalHistory: msg.data.finalHistory,
+      }));
     });
   };
 
@@ -469,6 +491,16 @@ export default function GamePage() {
     setView("home");
   };
 
+  const revealMyPath = () => {
+    // Loser shares their (possibly incomplete) word list with the winner at game over
+    if (ablyChannelRef.current) {
+      ablyChannelRef.current.publish("reveal_path", {
+        clientId: myClientId,
+        finalHistory: historyRef.current.map((s) => s.word),
+      });
+    }
+  };
+
   const currentWord = history.length > 0 ? history[history.length - 1].word : "";
   const targetWord = targetPair?.target || "";
 
@@ -490,6 +522,10 @@ export default function GamePage() {
       clearTimeout(t2);
     };
   }, [history, scrollToBottom]);
+
+  useEffect(() => {
+    historyRef.current = history;
+  }, [history]);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const sanitized = e.target.value.replace(/[^a-zA-Z]/g, "");
@@ -938,7 +974,7 @@ Score: ${finalScore.totalScore.toLocaleString()} pts • Cohesion: ${finalScore.
                         className="px-2 py-0.5 rounded text-[10px] font-mono border border-zinc-800 bg-zinc-950 text-zinc-300"
                         title={hasWon || opponentWon ? st.word : "Word hidden until game finishes"}
                       >
-                        {hasWon || (opponentWon && st.word)
+                        {st.word
                           ? st.word
                           : `Step ${i + 1} (${st.relatedness}%)`}
                       </span>
@@ -1175,11 +1211,11 @@ Score: ${finalScore.totalScore.toLocaleString()} pts • Cohesion: ${finalScore.
                       <span className="text-[10px] uppercase tracking-wider text-zinc-400 block">
                         Paths Side-by-Side
                       </span>
-                      <div className="truncate text-zinc-300">
+                      <div className="break-words whitespace-normal max-h-20 overflow-y-auto text-zinc-300">
                         <span className="text-white font-semibold">You: </span>
                         {history.map((s) => s.word).join(" → ")}
                       </div>
-                      <div className="truncate text-zinc-400">
+                      <div className="break-words whitespace-normal max-h-20 overflow-y-auto text-zinc-400">
                         <span className="text-zinc-300 font-semibold">Opponent: </span>
                         {opponent.finalHistory.join(" → ")}
                       </div>
