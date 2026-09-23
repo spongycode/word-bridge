@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import { WordPair } from "./domains";
 import { calculateGameScore, ScoreBreakdown } from "./lib/scoring";
 import { getAblyRealtime } from "./lib/ably";
+import { fetchWordDefinition } from "./lib/dictionary";
 
 interface StepRecord {
   word: string;
@@ -11,18 +12,24 @@ interface StepRecord {
   scoreVal: number;
 }
 
+interface OpponentStep {
+  step: number;
+  relatedness: number;
+  word?: string; // Revealed only at game over
+}
+
 interface OpponentState {
   clientId: string;
   name: string;
-  stepCount: number;
-  latestWord: string;
-  relatedness: number;
+  steps: OpponentStep[];
   hasWon: boolean;
+  finalHistory?: string[];
 }
 
 export default function GamePage() {
-  // Navigation: "home" | "solo" | "peer_lobby" | "peer_game"
-  const [mode, setMode] = useState<"home" | "solo" | "peer_lobby" | "peer_game">("home");
+  // Navigation: "home" | "game" | "peer_lobby"
+  const [gameType, setGameType] = useState<"solo" | "daily" | "peer">("solo");
+  const [view, setView] = useState<"home" | "lobby" | "playing">("home");
 
   // Game state
   const [targetPair, setTargetPair] = useState<WordPair | null>(null);
@@ -33,12 +40,16 @@ export default function GamePage() {
   const [failedAttempts, setFailedAttempts] = useState(0);
   const [copied, setCopied] = useState(false);
 
-  // Peer Multiplayer State
+  // Feature 1: Semantic Compass (Heatmap / Proximity)
+  const [targetProximity, setTargetProximity] = useState<number>(0);
+  const [proximityDelta, setProximityDelta] = useState<"hotter" | "colder" | null>(null);
+
+  // Feature 2: Fog of War Peer Multiplayer
   const [myClientId, setMyClientId] = useState<string>("");
   const [roomCode, setRoomCode] = useState<string>("");
   const [joinCodeInput, setJoinCodeInput] = useState<string>("");
   const [isHost, setIsHost] = useState(false);
-  const [lobbyStatus, setLobbyStatus] = useState<string>("idle"); // "hosting" | "joining"
+  const [lobbyStatus, setLobbyStatus] = useState<string>("idle");
   const [pendingGuest, setPendingGuest] = useState<{ clientId: string; name: string } | null>(null);
   const [opponent, setOpponent] = useState<OpponentState | null>(null);
 
@@ -56,16 +67,75 @@ export default function GamePage() {
   const inputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const ablyChannelRef = useRef<any>(null);
+  const defCacheRef = useRef<Record<string, { partOfSpeech?: string; definition: string }>>({});
 
-  // Generate unique client ID on mount
+  // Word definition tooltip/card state
+  const [activeDefinition, setActiveDefinition] = useState<{
+    word: string;
+    partOfSpeech?: string;
+    definition: string;
+    loading: boolean;
+  } | null>(null);
+
   useEffect(() => {
-    const id = `player_${Math.random().toString(36).substring(2, 7)}`;
-    setMyClientId(id);
+    setMyClientId(`player_${Math.random().toString(36).substring(2, 7)}`);
   }, []);
 
-  // Solo Start
-  const startSoloGame = async () => {
-    setMode("solo");
+  const handleToggleDefinition = async (word: string) => {
+    const clean = word.trim().toLowerCase();
+    if (!clean) return;
+
+    if (activeDefinition?.word === clean && !activeDefinition.loading) {
+      setActiveDefinition(null);
+      return;
+    }
+
+    if (defCacheRef.current[clean]) {
+      setActiveDefinition({
+        word: clean,
+        partOfSpeech: defCacheRef.current[clean].partOfSpeech,
+        definition: defCacheRef.current[clean].definition,
+        loading: false,
+      });
+      return;
+    }
+
+    setActiveDefinition({
+      word: clean,
+      definition: "Looking up definition...",
+      loading: true,
+    });
+
+    const res = await fetchWordDefinition(clean);
+    if (res) {
+      defCacheRef.current[clean] = {
+        partOfSpeech: res.partOfSpeech,
+        definition: res.definition,
+      };
+      setActiveDefinition({
+        word: clean,
+        partOfSpeech: res.partOfSpeech,
+        definition: res.definition,
+        loading: false,
+      });
+    } else {
+      const fallback = {
+        definition: "No definition found for this word.",
+      };
+      defCacheRef.current[clean] = fallback;
+      setActiveDefinition({
+        word: clean,
+        definition: fallback.definition,
+        loading: false,
+      });
+    }
+  };
+
+  // Start Solo / Daily Game
+  const initGame = async (type: "solo" | "daily") => {
+    setActiveDefinition(null);
+    setGameType(type);
+    setView("playing");
     setLoadingPair(true);
     setFeedback(null);
     setHasWon(false);
@@ -74,11 +144,15 @@ export default function GamePage() {
     setFailedAttempts(0);
     setNextWord("");
     setCopied(false);
+    setOpponent(null);
+    setProximityDelta(null);
 
     try {
-      const res = await fetch("/api/pair");
+      const url = type === "daily" ? "/api/pair?daily=true" : "/api/pair";
+      const res = await fetch(url);
       const pair: WordPair = await res.json();
       setTargetPair(pair);
+      setTargetProximity(pair.baselineScore ?? 15);
       setHistory([
         {
           word: pair.source,
@@ -94,27 +168,25 @@ export default function GamePage() {
     }
   };
 
-  // Peer: Host a Room
+  // Peer Multiplayer Setup
   const handleHostRoom = async () => {
     const code = Math.random().toString(36).substring(2, 6).toUpperCase();
     setRoomCode(code);
     setIsHost(true);
     setLobbyStatus("hosting");
-    setMode("peer_lobby");
+    setView("lobby");
     setPendingGuest(null);
 
-    // Fetch the challenge pair upfront so both play the exact same pair
     const res = await fetch("/api/pair");
     const pair: WordPair = await res.json();
     setTargetPair(pair);
+    setTargetProximity(pair.baselineScore ?? 15);
 
-    // Subscribe to room channel
     const ably = getAblyRealtime(myClientId);
     const channel = ably.channels.get(`game:room_${code}`);
     ablyChannelRef.current = channel;
 
     channel.subscribe("join_request", (msg: any) => {
-      // Guest wants to join!
       setPendingGuest({
         clientId: msg.data.clientId,
         name: msg.data.name || "Opponent",
@@ -123,13 +195,22 @@ export default function GamePage() {
 
     channel.subscribe("peer_step", (msg: any) => {
       if (msg.data.clientId !== myClientId) {
-        setOpponent({
-          clientId: msg.data.clientId,
-          name: msg.data.name || "Opponent",
-          stepCount: msg.data.stepCount,
-          latestWord: msg.data.latestWord,
-          relatedness: msg.data.relatedness,
-          hasWon: msg.data.hasWon,
+        setOpponent((prev) => {
+          const currentSteps = prev?.steps ?? [];
+          return {
+            clientId: msg.data.clientId,
+            name: msg.data.name || "Opponent",
+            steps: [
+              ...currentSteps,
+              {
+                step: msg.data.step,
+                relatedness: msg.data.relatedness,
+                word: msg.data.isGameOver ? msg.data.word : undefined, // Blurred until victory
+              },
+            ],
+            hasWon: msg.data.hasWon,
+            finalHistory: msg.data.finalHistory ?? prev?.finalHistory,
+          };
         });
 
         if (msg.data.hasWon) {
@@ -139,11 +220,10 @@ export default function GamePage() {
     });
   };
 
-  // Peer Host: Accept Pending Guest
   const handleAcceptGuest = () => {
     if (!pendingGuest || !ablyChannelRef.current || !targetPair) return;
+    setActiveDefinition(null);
 
-    // Broadcast room accepted with initial challenge pair
     ablyChannelRef.current.publish("join_accepted", {
       targetPair,
       hostId: myClientId,
@@ -153,9 +233,7 @@ export default function GamePage() {
     setOpponent({
       clientId: pendingGuest.clientId,
       name: pendingGuest.name,
-      stepCount: 1,
-      latestWord: targetPair.source,
-      relatedness: 100,
+      steps: [{ step: 1, relatedness: 100 }],
       hasWon: false,
     });
 
@@ -167,11 +245,11 @@ export default function GamePage() {
       },
     ]);
 
-    setMode("peer_game");
+    setGameType("peer");
+    setView("playing");
     setTimeout(() => inputRef.current?.focus(), 150);
   };
 
-  // Peer Guest: Join Room
   const handleJoinRoom = () => {
     const code = joinCodeInput.trim().toUpperCase();
     if (!code) return;
@@ -179,28 +257,26 @@ export default function GamePage() {
     setRoomCode(code);
     setIsHost(false);
     setLobbyStatus("joining");
-    setMode("peer_lobby");
+    setView("lobby");
 
     const ably = getAblyRealtime(myClientId);
     const channel = ably.channels.get(`game:room_${code}`);
     ablyChannelRef.current = channel;
 
-    // Send request to host
     channel.publish("join_request", {
       clientId: myClientId,
-      name: "Peer Player",
+      name: "Challenger",
     });
 
-    // Listen for host accept
     channel.subscribe("join_accepted", (msg: any) => {
+      setActiveDefinition(null);
       const pair: WordPair = msg.data.targetPair;
       setTargetPair(pair);
+      setTargetProximity(pair.baselineScore ?? 15);
       setOpponent({
         clientId: msg.data.hostId,
         name: "Host Player",
-        stepCount: 1,
-        latestWord: pair.source,
-        relatedness: 100,
+        steps: [{ step: 1, relatedness: 100 }],
         hasWon: false,
       });
 
@@ -212,19 +288,29 @@ export default function GamePage() {
         },
       ]);
 
-      setMode("peer_game");
+      setGameType("peer");
+      setView("playing");
       setTimeout(() => inputRef.current?.focus(), 150);
     });
 
     channel.subscribe("peer_step", (msg: any) => {
       if (msg.data.clientId !== myClientId) {
-        setOpponent({
-          clientId: msg.data.clientId,
-          name: msg.data.name || "Opponent",
-          stepCount: msg.data.stepCount,
-          latestWord: msg.data.latestWord,
-          relatedness: msg.data.relatedness,
-          hasWon: msg.data.hasWon,
+        setOpponent((prev) => {
+          const currentSteps = prev?.steps ?? [];
+          return {
+            clientId: msg.data.clientId,
+            name: msg.data.name || "Opponent",
+            steps: [
+              ...currentSteps,
+              {
+                step: msg.data.step,
+                relatedness: msg.data.relatedness,
+                word: msg.data.isGameOver ? msg.data.word : undefined,
+              },
+            ],
+            hasWon: msg.data.hasWon,
+            finalHistory: msg.data.finalHistory ?? prev?.finalHistory,
+          };
         });
 
         if (msg.data.hasWon) {
@@ -237,20 +323,16 @@ export default function GamePage() {
   const currentWord = history.length > 0 ? history[history.length - 1].word : "";
   const targetWord = targetPair?.target || "";
 
-  // Auto-scroll history container
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [history]);
 
-  // Input filter: only letters
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const sanitized = e.target.value.replace(/[^a-zA-Z]/g, "");
     setNextWord(sanitized);
-    if (feedback?.type === "error") {
-      setFeedback(null);
-    }
+    if (feedback?.type === "error") setFeedback(null);
   };
 
   const candidateLower = nextWord.trim().toLowerCase();
@@ -258,7 +340,6 @@ export default function GamePage() {
   const isSameAsCurrent = candidateLower === currentWord.toLowerCase();
   const canSubmit = candidateLower.length >= 2 && !isDuplicate && !isSameAsCurrent && !loading;
 
-  // Live score potential
   const currentStepCount = Math.max(0, history.length - 1);
   const currentLiveScore = Math.max(
     500,
@@ -273,11 +354,15 @@ export default function GamePage() {
     setFeedback(null);
 
     try {
-      // Evaluate candidate similarity
+      // Parallel evaluation: validity + relatedness + target proximity
       const res = await fetch("/api/compare", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ word1: currentWord, word2: candidateLower }),
+        body: JSON.stringify({
+          word1: currentWord,
+          word2: candidateLower,
+          targetWord,
+        }),
       });
 
       const data = await res.json();
@@ -287,6 +372,9 @@ export default function GamePage() {
       const scoreVal = data?.answers?.similarity_score?.score ?? 0;
       const pct = Math.round(noulProbability * 100);
 
+      const newProximityPct = Math.round((data?.answers?.proximity_to_target?.noul ?? 0) * 100);
+
+      // Check 70% threshold
       if (pct < 70) {
         setFailedAttempts((prev) => prev + 1);
         setFeedback({
@@ -299,27 +387,32 @@ export default function GamePage() {
         return;
       }
 
-      // Step accepted
+      // Feature 1: Semantic Compass comparison (Heating up or Getting colder)
+      if (newProximityPct > targetProximity) {
+        setProximityDelta("hotter");
+      } else if (newProximityPct < targetProximity) {
+        setProximityDelta("colder");
+      } else {
+        setProximityDelta(null);
+      }
+      setTargetProximity(newProximityPct);
+
       const newHistory: StepRecord[] = [
         ...history,
-        {
-          word: candidateLower,
-          relatednessToPrevious: pct,
-          scoreVal,
-        },
+        { word: candidateLower, relatednessToPrevious: pct, scoreVal },
       ];
       setHistory(newHistory);
       setNextWord("");
 
-      // Publish progress to Peer if in multiplayer
-      if (mode === "peer_game" && ablyChannelRef.current) {
+      // Feature 2: Fog of War Peer Broadcast (Words stay blurred to opponent!)
+      if (gameType === "peer" && ablyChannelRef.current) {
         ablyChannelRef.current.publish("peer_step", {
           clientId: myClientId,
-          name: isHost ? "Host" : "Guest",
-          stepCount: newHistory.length,
-          latestWord: candidateLower,
+          name: isHost ? "Host" : "Challenger",
+          step: newHistory.length,
           relatedness: pct,
           hasWon: false,
+          isGameOver: false,
         });
       }
 
@@ -334,15 +427,16 @@ export default function GamePage() {
         setFinalScore(score);
         setHasWon(true);
 
-        // Broadcast victory to peer
-        if (mode === "peer_game" && ablyChannelRef.current) {
+        if (gameType === "peer" && ablyChannelRef.current) {
+          // Reveal full pathway at end of match
           ablyChannelRef.current.publish("peer_step", {
             clientId: myClientId,
-            name: isHost ? "Host" : "Guest",
-            stepCount: finalSteps.length,
-            latestWord: targetWord,
+            name: isHost ? "Host" : "Challenger",
+            step: finalSteps.length,
             relatedness: 100,
             hasWon: true,
+            isGameOver: true,
+            finalHistory: finalSteps.map((s) => s.word),
           });
         }
       };
@@ -352,42 +446,34 @@ export default function GamePage() {
         finalizeVictory(newHistory);
         setFeedback({
           type: "success",
-          message: `🎉 Incredible! You reached "${targetWord}" in ${newHistory.length - 1} steps!`,
+          message: `🎉 Reached "${targetWord}" in ${newHistory.length - 1} steps!`,
           score: pct,
         });
         setLoading(false);
         return;
       }
 
-      // Proximity check to target word
-      const targetRes = await fetch("/api/compare", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ word1: candidateLower, word2: targetWord }),
-      });
-      const targetData = await targetRes.json();
-      const targetPct = Math.round((targetData?.answers?.are_related?.noul ?? 0) * 100);
-
-      if (targetPct >= 70) {
+      // Auto-connect if candidate is >= 70% to target
+      if (newProximityPct >= 70) {
         const finalHistory: StepRecord[] = [
           ...newHistory,
           {
             word: targetWord,
-            relatednessToPrevious: targetPct,
-            scoreVal: targetData?.answers?.similarity_score?.score ?? 3.0,
+            relatednessToPrevious: newProximityPct,
+            scoreVal: 3.0,
           },
         ];
         setHistory(finalHistory);
         finalizeVictory(finalHistory);
         setFeedback({
           type: "success",
-          message: `🎉 Connection Complete! "${candidateLower}" connected to "${targetWord}" (${targetPct}% related)!`,
-          score: targetPct,
+          message: `🎉 Connected to "${targetWord}" (${newProximityPct}% related)!`,
+          score: newProximityPct,
         });
       } else {
         setFeedback({
           type: "info",
-          message: `Step accepted (${pct}% to "${currentWord}"). Proximity to goal: ${targetPct}%.`,
+          message: `Step accepted (${pct}%). Compass: ${newProximityPct}% to target.`,
           score: pct,
         });
       }
@@ -404,7 +490,8 @@ export default function GamePage() {
 
   const copyShareText = () => {
     if (!targetPair || !finalScore) return;
-    const shareText = `🧩 WordBridge
+    const isDailyChallenge = gameType === "daily";
+    const shareText = `🧩 WordBridge ${isDailyChallenge ? "(Daily Challenge)" : ""}
 ${targetPair.source} ➡️ ${targetPair.target}
 Solved in ${history.length - 1} steps • Rank: ${finalScore.rank} (${finalScore.title})
 Score: ${finalScore.totalScore.toLocaleString()} pts
@@ -417,44 +504,56 @@ Played on WordBridge`;
   };
 
   // ==========================================
-  // VIEW 1: HOME PAGE (SOLO vs PEER)
+  // VIEW 1: HOME PAGE
   // ==========================================
-  if (mode === "home") {
+  if (view === "home") {
     return (
       <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col items-center justify-center p-6 selection:bg-indigo-500 selection:text-white">
-        <div className="w-full max-w-md bg-slate-900/80 backdrop-blur-md border border-slate-800 rounded-3xl p-8 shadow-2xl text-center space-y-6">
+        <div className="w-full max-w-md bg-slate-900/90 backdrop-blur-md border border-slate-800 rounded-3xl p-8 shadow-2xl text-center space-y-6">
           <div className="inline-flex items-center gap-2 px-3.5 py-1 rounded-full text-xs font-semibold bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
             Semantic Association Game
           </div>
 
           <div>
-            <h1 className="text-3xl font-extrabold tracking-tight bg-gradient-to-r from-white via-slate-200 to-indigo-300 bg-clip-text text-transparent">
+            <h1 className="text-4xl font-extrabold tracking-tight bg-gradient-to-r from-white via-slate-200 to-indigo-300 bg-clip-text text-transparent">
               WordBridge
             </h1>
             <p className="text-sm text-slate-400 mt-2">
-              Bridge distant concepts step-by-step using semantic relatedness (&ge; 70%).
+              Build stepping stones between distant concepts with &ge; 70% semantic affinity.
             </p>
           </div>
 
           <div className="space-y-3 pt-2">
+            {/* Feature 3: Daily Challenge Button */}
             <button
-              onClick={startSoloGame}
-              className="w-full py-4 px-5 bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 text-white font-bold rounded-2xl transition duration-150 flex items-center justify-center gap-3 shadow-lg shadow-indigo-600/25 text-base"
+              onClick={() => initGame("daily")}
+              className="w-full py-4 px-5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 active:from-amber-600 active:to-amber-700 text-slate-950 font-extrabold rounded-2xl transition duration-150 flex items-center justify-between shadow-lg shadow-amber-500/20 text-base"
             >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-              </svg>
-              <span>Play Solo</span>
+              <div className="flex items-center gap-3">
+                <span className="text-xl">📅</span>
+                <div className="text-left">
+                  <span className="block text-sm font-bold">Daily Challenge</span>
+                  <span className="block text-[11px] text-slate-950/80 font-medium">1 global puzzle every 24h</span>
+                </div>
+              </div>
+              <span className="text-xs bg-slate-950/20 px-2 py-0.5 rounded-full font-bold">Today</span>
             </button>
 
+            {/* Solo Random Game */}
             <button
-              onClick={() => setMode("peer_lobby")}
-              className="w-full py-4 px-5 bg-slate-800/90 hover:bg-slate-700 active:bg-slate-800 text-slate-200 font-bold rounded-2xl transition duration-150 border border-slate-700 flex items-center justify-center gap-3 text-base"
+              onClick={() => initGame("solo")}
+              className="w-full py-3.5 px-5 bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 text-white font-bold rounded-2xl transition duration-150 flex items-center justify-center gap-3 shadow-lg shadow-indigo-600/25 text-base"
             >
-              <svg className="w-5 h-5 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
-              </svg>
-              <span>Peer 1v1 Race (Realtime)</span>
+              <span>Play Random Solo</span>
+            </button>
+
+            {/* Feature 2: Fog of War Peer Race */}
+            <button
+              onClick={() => setView("lobby")}
+              className="w-full py-3.5 px-5 bg-slate-800/90 hover:bg-slate-700 active:bg-slate-800 text-slate-200 font-bold rounded-2xl transition duration-150 border border-slate-700 flex items-center justify-center gap-3 text-base"
+            >
+              <span className="text-indigo-400">👥</span>
+              <span>1v1 Peer Race (Fog of War)</span>
             </button>
           </div>
         </div>
@@ -463,18 +562,18 @@ Played on WordBridge`;
   }
 
   // ==========================================
-  // VIEW 2: PEER LOBBY (HOST / JOIN / ACCEPT)
+  // VIEW 2: PEER LOBBY
   // ==========================================
-  if (mode === "peer_lobby") {
+  if (view === "lobby") {
     return (
       <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col items-center justify-center p-6 selection:bg-indigo-500 selection:text-white">
         <div className="w-full max-w-md bg-slate-900/90 backdrop-blur-md border border-slate-800 rounded-3xl p-7 shadow-2xl space-y-6">
           <div className="flex items-center justify-between pb-3 border-b border-slate-800">
             <h2 className="text-xl font-bold text-white flex items-center gap-2">
-              <span>👥</span> Realtime 1v1 Peer Match
+              <span>🌫️</span> 1v1 Blind Match (Fog of War)
             </h2>
             <button
-              onClick={() => setMode("home")}
+              onClick={() => setView("home")}
               className="text-xs text-slate-400 hover:text-white transition"
             >
               Back
@@ -482,17 +581,16 @@ Played on WordBridge`;
           </div>
 
           {lobbyStatus === "hosting" ? (
-            /* HOST WAITING FOR PEER ACCEPTANCE */
             <div className="space-y-5 text-center">
               <div className="p-4 bg-indigo-950/40 border border-indigo-500/30 rounded-2xl space-y-1">
                 <span className="text-[11px] uppercase tracking-wider text-slate-400 font-bold block">
-                  Your Room Code
+                  Room Code
                 </span>
                 <span className="text-3xl font-black text-indigo-300 font-mono tracking-widest">
                   {roomCode}
                 </span>
                 <span className="text-[11px] text-slate-400 block pt-1">
-                  Share this code with your friend
+                  Share this code with your opponent
                 </span>
               </div>
 
@@ -500,12 +598,8 @@ Played on WordBridge`;
                 <div className="p-4 bg-emerald-950/50 border border-emerald-500/40 rounded-2xl text-left space-y-3 animate-in fade-in">
                   <div className="flex items-center justify-between">
                     <div>
-                      <span className="text-xs text-emerald-400 font-bold block">
-                        Player Waiting to Join!
-                      </span>
-                      <span className="text-sm font-semibold text-white">
-                        {pendingGuest.name} ({pendingGuest.clientId})
-                      </span>
+                      <span className="text-xs text-emerald-400 font-bold block">Challenger Ready!</span>
+                      <span className="text-sm font-semibold text-white">{pendingGuest.name}</span>
                     </div>
                     <span className="w-3 h-3 rounded-full bg-emerald-400 animate-ping"></span>
                   </div>
@@ -520,25 +614,19 @@ Played on WordBridge`;
               ) : (
                 <div className="p-5 border border-slate-800 rounded-2xl space-y-3">
                   <div className="w-6 h-6 border-2 border-indigo-500/30 border-t-indigo-400 rounded-full animate-spin mx-auto"></div>
-                  <p className="text-xs text-slate-400 font-medium">
-                    Waiting for peer to enter room code...
-                  </p>
+                  <p className="text-xs text-slate-400 font-medium">Waiting for challenger...</p>
                 </div>
               )}
             </div>
           ) : lobbyStatus === "joining" ? (
-            /* GUEST WAITING FOR HOST ACCEPTANCE */
             <div className="space-y-4 text-center py-4">
               <div className="w-8 h-8 border-2 border-indigo-500/30 border-t-indigo-400 rounded-full animate-spin mx-auto"></div>
               <div>
                 <h3 className="text-base font-bold text-white">Connected to Room {roomCode}</h3>
-                <p className="text-xs text-slate-400 mt-1">
-                  Waiting for host to accept your request...
-                </p>
+                <p className="text-xs text-slate-400 mt-1">Waiting for host to accept...</p>
               </div>
             </div>
           ) : (
-            /* LOBBY MENU: CREATE OR JOIN */
             <div className="space-y-5">
               <button
                 onClick={handleHostRoom}
@@ -558,7 +646,7 @@ Played on WordBridge`;
               <div className="space-y-2.5">
                 <input
                   type="text"
-                  placeholder="Enter 4-letter Room Code"
+                  placeholder="Enter Room Code"
                   value={joinCodeInput}
                   onChange={(e) => setJoinCodeInput(e.target.value.toUpperCase())}
                   maxLength={6}
@@ -580,7 +668,7 @@ Played on WordBridge`;
   }
 
   // ==========================================
-  // VIEW 3: ACTIVE GAME (SOLO or PEER RACE)
+  // VIEW 3: ACTIVE GAME
   // ==========================================
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col items-center justify-between p-4 sm:p-6 selection:bg-indigo-500 selection:text-white">
@@ -595,7 +683,11 @@ Played on WordBridge`;
               WordBridge
             </h1>
             <span className="text-[11px] text-slate-400">
-              {mode === "peer_game" ? `1v1 Match • Room ${roomCode}` : "Solo Challenge"}
+              {gameType === "daily"
+                ? "Daily Global Challenge"
+                : gameType === "peer"
+                ? `1v1 Match • Room ${roomCode}`
+                : "Solo Challenge"}
             </span>
           </div>
         </div>
@@ -611,10 +703,10 @@ Played on WordBridge`;
           </div>
 
           <button
-            onClick={() => setMode("home")}
+            onClick={() => setView("home")}
             className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-300 rounded-xl transition border border-slate-700/60"
           >
-            Exit
+            Menu
           </button>
         </div>
       </header>
@@ -630,25 +722,42 @@ Played on WordBridge`;
           </div>
         ) : (
           <>
-            {/* OPPONENT LIVE STATUS CARD (PEER MODE ONLY) */}
-            {mode === "peer_game" && opponent && (
-              <div className="mb-4 p-3 bg-indigo-950/30 border border-indigo-500/30 rounded-2xl flex items-center justify-between text-xs">
-                <div className="flex items-center gap-2">
-                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                  <span className="font-bold text-slate-200">Opponent: {opponent.name}</span>
+            {/* FEATURE 2: FOG OF WAR OPPONENT BAR */}
+            {gameType === "peer" && opponent && (
+              <div className="mb-4 p-3 bg-indigo-950/30 border border-indigo-500/30 rounded-2xl text-xs space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                    <span className="font-bold text-slate-200">Opponent: {opponent.name}</span>
+                  </div>
+                  <span className="text-[11px] text-slate-400">
+                    Step {opponent.steps.length} {opponent.hasWon ? "🏁 Finished!" : ""}
+                  </span>
                 </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-slate-400">Step {opponent.stepCount}:</span>
-                  <span className="font-semibold text-indigo-300 capitalize">"{opponent.latestWord}"</span>
-                  {opponent.hasWon && (
-                    <span className="text-rose-400 font-bold ml-1">Finished! 🏁</span>
-                  )}
+
+                {/* Fog of war masked tiles */}
+                <div className="flex items-center gap-1.5 overflow-x-auto py-1">
+                  {opponent.steps.map((st, i) => (
+                    <span
+                      key={i}
+                      className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold border transition ${
+                        st.relatedness >= 85
+                          ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/30"
+                          : "bg-amber-500/20 text-amber-300 border-amber-500/30"
+                      }`}
+                      title={hasWon || opponentWon ? st.word : "Word hidden until game finishes"}
+                    >
+                      {hasWon || opponentWon && st.word
+                        ? st.word
+                        : `Step ${i + 1} (${st.relatedness}%)`}
+                    </span>
+                  ))}
                 </div>
               </div>
             )}
 
             {/* Goal Indicator Card */}
-            <div className="bg-gradient-to-r from-slate-900 via-indigo-950/40 to-slate-900 border border-indigo-500/20 rounded-2xl p-4 mb-4 shadow-inner">
+            <div className="bg-gradient-to-r from-slate-900 via-indigo-950/40 to-slate-900 border border-indigo-500/20 rounded-2xl p-4 mb-3 shadow-inner">
               <div className="flex items-center justify-between text-xs text-slate-400 mb-2 font-medium">
                 <span className="flex items-center gap-1.5 font-bold tracking-wider text-slate-300">
                   <span className="w-2 h-2 rounded-full bg-rose-500 animate-pulse"></span>
@@ -660,9 +769,29 @@ Played on WordBridge`;
               </div>
 
               <div className="flex items-center justify-between gap-3">
+                {/* Start Word */}
                 <div className="flex-1 bg-slate-800/80 border border-slate-700/80 rounded-xl p-3 text-center">
-                  <span className="text-[10px] text-slate-400 uppercase font-semibold block mb-0.5">Start</span>
-                  <span className="text-lg sm:text-xl font-extrabold text-indigo-300 capitalize tracking-wide">
+                  <div className="flex items-center justify-center gap-1.5 mb-0.5">
+                    <span className="text-[10px] text-slate-400 uppercase font-semibold">Start</span>
+                    <button
+                      type="button"
+                      onClick={() => handleToggleDefinition(targetPair.source)}
+                      className={`text-[10px] w-4 h-4 rounded-full flex items-center justify-center font-bold transition border ${
+                        activeDefinition?.word === targetPair.source.toLowerCase()
+                          ? "bg-indigo-500 text-white border-indigo-400 shadow-sm shadow-indigo-500/50"
+                          : "text-slate-400 hover:text-indigo-300 border-slate-600 hover:border-indigo-400/60 bg-slate-800/80"
+                      }`}
+                      title={`View definition of "${targetPair.source}"`}
+                      aria-label={`View definition of ${targetPair.source}`}
+                    >
+                      ?
+                    </button>
+                  </div>
+                  <span
+                    onClick={() => handleToggleDefinition(targetPair.source)}
+                    className="text-lg sm:text-xl font-extrabold text-indigo-300 capitalize tracking-wide cursor-pointer hover:underline decoration-indigo-400/40 underline-offset-4 transition"
+                    title={`Click for definition of "${targetPair.source}"`}
+                  >
                     {targetPair.source}
                   </span>
                 </div>
@@ -674,17 +803,105 @@ Played on WordBridge`;
                   <span className="text-[9px] font-semibold text-indigo-400/80 mt-0.5">&gt;= 70%</span>
                 </div>
 
+                {/* Target Word */}
                 <div className="flex-1 bg-slate-800/80 border border-slate-700/80 rounded-xl p-3 text-center">
-                  <span className="text-[10px] text-slate-400 uppercase font-semibold block mb-0.5">Target</span>
-                  <span className="text-lg sm:text-xl font-extrabold text-emerald-300 capitalize tracking-wide">
+                  <div className="flex items-center justify-center gap-1.5 mb-0.5">
+                    <span className="text-[10px] text-slate-400 uppercase font-semibold">Target</span>
+                    <button
+                      type="button"
+                      onClick={() => handleToggleDefinition(targetPair.target)}
+                      className={`text-[10px] w-4 h-4 rounded-full flex items-center justify-center font-bold transition border ${
+                        activeDefinition?.word === targetPair.target.toLowerCase()
+                          ? "bg-emerald-500 text-slate-950 border-emerald-400 shadow-sm shadow-emerald-500/50"
+                          : "text-slate-400 hover:text-emerald-300 border-slate-600 hover:border-emerald-400/60 bg-slate-800/80"
+                      }`}
+                      title={`View definition of "${targetPair.target}"`}
+                      aria-label={`View definition of ${targetPair.target}`}
+                    >
+                      ?
+                    </button>
+                  </div>
+                  <span
+                    onClick={() => handleToggleDefinition(targetPair.target)}
+                    className="text-lg sm:text-xl font-extrabold text-emerald-300 capitalize tracking-wide cursor-pointer hover:underline decoration-emerald-400/40 underline-offset-4 transition"
+                    title={`Click for definition of "${targetPair.target}"`}
+                  >
                     {targetPair.target}
                   </span>
+                </div>
+              </div>
+
+              {/* Word Definition Drawer */}
+              {activeDefinition && (
+                <div className="mt-3 p-3 bg-slate-950/90 border border-indigo-500/30 rounded-xl text-left shadow-lg">
+                  <div className="flex items-center justify-between gap-2 mb-1.5">
+                    <div className="flex items-center gap-2">
+                      <span className="font-bold text-white capitalize text-sm">
+                        {activeDefinition.word}
+                      </span>
+                      {activeDefinition.partOfSpeech && (
+                        <span className="px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-300 text-[10px] font-mono italic">
+                          {activeDefinition.partOfSpeech}
+                        </span>
+                      )}
+                      {activeDefinition.loading && (
+                        <span className="w-2.5 h-2.5 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin"></span>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setActiveDefinition(null)}
+                      className="text-slate-400 hover:text-white text-xs px-1.5 py-0.5 rounded hover:bg-slate-800 transition"
+                      aria-label="Close definition"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                  <p className="text-slate-300 text-[11px] leading-relaxed">
+                    {activeDefinition.definition}
+                  </p>
+                </div>
+              )}
+            </div>
+
+            {/* FEATURE 1: SEMANTIC COMPASS / HEATMAP BAR */}
+            <div className="mb-3 px-4 py-2 bg-slate-800/40 border border-slate-700/50 rounded-xl flex items-center justify-between text-xs">
+              <div className="flex items-center gap-2">
+                <span className="text-sm">🧭</span>
+                <span className="text-slate-400 font-medium">Target Proximity:</span>
+                <span className="font-mono font-bold text-white">{targetProximity}%</span>
+              </div>
+
+              <div className="flex items-center gap-2">
+                {proximityDelta === "hotter" && (
+                  <span className="text-amber-400 font-bold flex items-center gap-1 animate-pulse">
+                    <span>🔥</span> Heating Up!
+                  </span>
+                )}
+                {proximityDelta === "colder" && (
+                  <span className="text-cyan-400 font-bold flex items-center gap-1 animate-pulse">
+                    <span>❄️</span> Getting Colder
+                  </span>
+                )}
+
+                {/* Visual heat gauge */}
+                <div className="w-20 bg-slate-700 h-2 rounded-full overflow-hidden">
+                  <div
+                    className={`h-full transition-all duration-500 ${
+                      targetProximity >= 60
+                        ? "bg-emerald-400"
+                        : targetProximity >= 35
+                        ? "bg-amber-400"
+                        : "bg-indigo-400"
+                    }`}
+                    style={{ width: `${Math.min(100, targetProximity)}%` }}
+                  ></div>
                 </div>
               </div>
             </div>
 
             {/* Path History Chain */}
-            <div className="flex-1 min-h-[190px] max-h-[250px] overflow-y-auto pr-1 space-y-2 mb-3" ref={scrollRef}>
+            <div className="flex-1 min-h-[170px] max-h-[220px] overflow-y-auto pr-1 space-y-2 mb-3" ref={scrollRef}>
               <div className="flex items-center justify-between text-[11px] font-semibold uppercase tracking-wider text-slate-400 mb-1">
                 <span>Your Chain ({history.length} {history.length === 1 ? "word" : "words"})</span>
                 <span>Missed Attempts: <b className="text-rose-400">{failedAttempts}</b></span>
@@ -761,7 +978,7 @@ Played on WordBridge`;
               </div>
             )}
 
-            {/* Victory / Defeat Screen */}
+            {/* Victory / Defeat Screen & Reveal Comparison */}
             {(hasWon || opponentWon) && (
               <div className="p-5 bg-gradient-to-br from-emerald-950/70 via-slate-900 to-indigo-950/60 border border-emerald-500/40 rounded-2xl text-center space-y-4 animate-in zoom-in-95 duration-300 mb-2">
                 <div className="flex items-center justify-center gap-3">
@@ -777,6 +994,35 @@ Played on WordBridge`;
                     </span>
                   </div>
                 </div>
+
+                {/* FEATURE 2: SIDE-BY-SIDE PATHWAY REVEAL IN MULTIPLAYER */}
+                {gameType === "peer" && opponent?.finalHistory && (
+                  <div className="p-3 bg-slate-800/80 rounded-xl border border-slate-700/60 text-xs text-left space-y-2">
+                    <span className="text-[10px] uppercase font-bold text-slate-400 block tracking-wider">
+                      Paths Revealed (Side-by-Side)
+                    </span>
+                    <div className="space-y-1">
+                      <div className="truncate">
+                        <span className="text-indigo-400 font-bold">You: </span>
+                        <span className="text-slate-200">{history.map((s) => s.word).join(" ➔ ")}</span>
+                      </div>
+                      <div className="truncate">
+                        <span className="text-amber-400 font-bold">Opponent: </span>
+                        <span className="text-slate-200">{opponent.finalHistory.join(" ➔ ")}</span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* FEATURE 3: GLOBAL PATH BENCHMARK ON DAILY CHALLENGE */}
+                {gameType === "daily" && (
+                  <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl text-xs space-y-1 text-left">
+                    <span className="text-amber-400 font-bold block">🏆 Daily Global Benchmark</span>
+                    <p className="text-slate-300">
+                      You solved today’s challenge in <b>{history.length - 1} steps</b>! Today’s par record is <b>4 steps</b>.
+                    </p>
+                  </div>
+                )}
 
                 {finalScore && (
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
@@ -808,10 +1054,10 @@ Played on WordBridge`;
                   </button>
 
                   <button
-                    onClick={() => (mode === "peer_game" ? setMode("home") : startSoloGame())}
+                    onClick={() => (gameType === "peer" ? setView("home") : initGame(gameType))}
                     className="flex-1 py-3 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold rounded-xl text-sm transition shadow-lg shadow-emerald-500/20"
                   >
-                    {mode === "peer_game" ? "Main Menu" : "Play Next"}
+                    {gameType === "peer" ? "Main Menu" : "Play Next"}
                   </button>
                 </div>
               </div>
@@ -847,9 +1093,7 @@ Played on WordBridge`;
                 </div>
 
                 <div className="flex justify-between items-center text-[11px] text-slate-500 px-1">
-                  <span>
-                    Rule: Must be &gt;= 70% related to <b>"{currentWord}"</b>
-                  </span>
+                  <span>Rule: Must be &gt;= 70% related to <b>"{currentWord}"</b></span>
                   {nextWord.length === 1 ? (
                     <span className="text-slate-400">Min 2 letters</span>
                   ) : isDuplicate ? (
