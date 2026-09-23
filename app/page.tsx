@@ -79,6 +79,26 @@ export default function GamePage() {
 
   useEffect(() => {
     setMyClientId(`player_${Math.random().toString(36).substring(2, 7)}`);
+
+    const handleScrollLock = () => {
+      if (window.scrollY !== 0) {
+        window.scrollTo(0, 0);
+      }
+    };
+
+    window.addEventListener("scroll", handleScrollLock, { passive: true });
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener("resize", handleScrollLock);
+      window.visualViewport.addEventListener("scroll", handleScrollLock);
+    }
+
+    return () => {
+      window.removeEventListener("scroll", handleScrollLock);
+      if (window.visualViewport) {
+        window.visualViewport.removeEventListener("resize", handleScrollLock);
+        window.visualViewport.removeEventListener("scroll", handleScrollLock);
+      }
+    };
   }, []);
 
   const handleToggleDefinition = async (word: string) => {
@@ -717,7 +737,7 @@ Score: ${finalScore.totalScore.toLocaleString()} pts • Cohesion: ${finalScore.
   // VIEW 3: ACTIVE GAME (Mobile Viewport Optimized)
   // ==========================================
   return (
-    <div className="h-[100dvh] max-h-[100dvh] overflow-hidden bg-black text-zinc-100 flex flex-col items-center justify-between p-2 sm:p-4 md:p-6 selection:bg-zinc-800 selection:text-white">
+    <div className="fixed inset-0 overflow-hidden bg-black text-zinc-100 flex flex-col items-center justify-between p-2 sm:p-4 selection:bg-zinc-800 selection:text-white">
       {/* Header (shrink-0) */}
       <header className="w-full max-w-xl flex items-center justify-between py-1.5 sm:py-2 border-b border-zinc-800/40 mb-2 sm:mb-3 shrink-0">
         <div className="flex items-center gap-2.5 sm:gap-3">
@@ -1094,6 +1114,11 @@ Score: ${finalScore.totalScore.toLocaleString()} pts • Cohesion: ${finalScore.
                       placeholder={`Step from "${currentWord}"...`}
                       value={nextWord}
                       onChange={handleInputChange}
+                      onFocus={() => {
+                        if (typeof window !== "undefined") {
+                          setTimeout(() => window.scrollTo(0, 0), 30);
+                        }
+                      }}
                       disabled={loading}
                       autoFocus
                       className="flex-1 px-3.5 py-2.5 sm:py-3 bg-zinc-900/60 border border-zinc-800/50 rounded-xl text-white placeholder-zinc-600 focus:outline-none focus:border-zinc-700 font-medium text-sm sm:text-base transition-colors"
