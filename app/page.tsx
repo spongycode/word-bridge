@@ -807,19 +807,10 @@ Score: ${finalScore.totalScore.toLocaleString()} pts • Cohesion: ${finalScore.
               )}
 
               {/* Target Goal Card */}
-              <div className="bg-zinc-900/40 border border-zinc-800/40 rounded-xl p-2.5 sm:p-4">
-                <div className="flex items-center justify-between text-[10px] font-mono uppercase tracking-wider text-zinc-400 mb-1.5">
-                  <span className="font-semibold text-zinc-300">
-                    {gameType === "daily" ? "Daily Bridge" : "Challenge"}
-                  </span>
-                  <span>
-                    {targetPair.difficulty} • {targetPair.baselineScore}% Baseline
-                  </span>
-                </div>
-
+              <div className="bg-zinc-900/40 border border-zinc-800/40 rounded-xl p-2.5 sm:p-3.5">
                 <div className="flex items-center justify-between gap-2 sm:gap-3">
                   {/* Start Word */}
-                  <div className="flex-1 bg-zinc-950/60 border border-zinc-800/30 rounded-lg sm:rounded-xl p-2 sm:p-3 text-center">
+                  <div className="flex-1 bg-zinc-950/60 border border-zinc-800/30 rounded-lg sm:rounded-xl p-2 sm:p-2.5 text-center">
                     <div className="flex items-center justify-center gap-1 mb-0.5">
                       <span className="text-[9px] sm:text-[10px] font-mono uppercase text-zinc-400">Start</span>
                       <button
@@ -846,13 +837,12 @@ Score: ${finalScore.totalScore.toLocaleString()} pts • Cohesion: ${finalScore.
                   </div>
 
                   {/* Divider Arrow */}
-                  <div className="flex flex-col items-center justify-center text-zinc-500 px-0.5 sm:px-1 shrink-0">
+                  <div className="flex items-center justify-center text-zinc-600 px-0.5 sm:px-1 shrink-0">
                     <span className="text-sm sm:text-base text-zinc-400">→</span>
-                    <span className="text-[8px] sm:text-[9px] font-mono text-zinc-400">≥ 70%</span>
                   </div>
 
                   {/* Target Word */}
-                  <div className="flex-1 bg-zinc-950/60 border border-zinc-800/30 rounded-lg sm:rounded-xl p-2 sm:p-3 text-center">
+                  <div className="flex-1 bg-zinc-950/60 border border-zinc-800/30 rounded-lg sm:rounded-xl p-2 sm:p-2.5 text-center">
                     <div className="flex items-center justify-center gap-1 mb-0.5">
                       <span className="text-[9px] sm:text-[10px] font-mono uppercase text-zinc-400">Target</span>
                       <button
@@ -1092,21 +1082,7 @@ Score: ${finalScore.totalScore.toLocaleString()} pts • Cohesion: ${finalScore.
                 </div>
               ) : (
                 /* Input Form */
-                <form onSubmit={handleStepSubmit} className="space-y-1.5">
-                  {/* Contextual Mini Anchor Bar directly above input */}
-                  <div className="flex items-center justify-between text-[11px] font-mono px-1 text-zinc-400">
-                    <div className="flex items-center gap-1.5 truncate">
-                      <span className="text-zinc-500">From:</span>
-                      <span className="text-white font-semibold capitalize">{currentWord}</span>
-                      <span className="text-zinc-600">→</span>
-                      <span className="text-zinc-500">Target:</span>
-                      <span className="text-zinc-200 font-semibold capitalize">{targetWord}</span>
-                    </div>
-                    <span className="text-[10px] text-zinc-400 shrink-0 font-mono ml-2">
-                      {targetProximity}%
-                    </span>
-                  </div>
-
+                <form onSubmit={handleStepSubmit} className="pt-0.5">
                   <div className="flex gap-2">
                     <input
                       ref={inputRef}
@@ -1131,17 +1107,6 @@ Score: ${finalScore.totalScore.toLocaleString()} pts • Cohesion: ${finalScore.
                     >
                       {loading ? "..." : "Submit"}
                     </button>
-                  </div>
-
-                  <div className="flex justify-between items-center text-[10px] font-mono text-zinc-500 px-1">
-                    <span>≥ 70% related</span>
-                    {nextWord.length === 1 ? (
-                      <span className="text-zinc-400">Min 2 letters</span>
-                    ) : isDuplicate ? (
-                      <span className="text-rose-400">Already in chain</span>
-                    ) : (
-                      <span>Real-time check</span>
-                    )}
                   </div>
                 </form>
               )}
