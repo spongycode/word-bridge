@@ -346,9 +346,18 @@ export default function GamePage() {
   const targetWord = targetPair?.target || "";
 
   useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
+    const scrollToBottom = () => {
+      if (scrollRef.current) {
+        scrollRef.current.scrollTo({
+          top: scrollRef.current.scrollHeight,
+          behavior: "smooth",
+        });
+      }
+    };
+
+    scrollToBottom();
+    const t = setTimeout(scrollToBottom, 50);
+    return () => clearTimeout(t);
   }, [history]);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -370,8 +379,9 @@ export default function GamePage() {
 
   const handleStepSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!canSubmit) return;
+    if (!canSubmit || loading) return;
 
+    inputRef.current?.focus();
     setLoading(true);
     setFeedback(null);
 
@@ -1095,14 +1105,14 @@ Score: ${finalScore.totalScore.toLocaleString()} pts • Cohesion: ${finalScore.
                           setTimeout(() => window.scrollTo(0, 0), 30);
                         }
                       }}
-                      disabled={loading}
                       autoFocus
                       className="flex-1 px-3.5 py-2.5 sm:py-3 bg-zinc-900/60 border border-zinc-800/50 rounded-xl text-white placeholder-zinc-600 focus:outline-none focus:border-zinc-700 font-medium text-sm sm:text-base transition-colors"
                     />
 
                     <button
                       type="submit"
-                      disabled={!canSubmit}
+                      disabled={!canSubmit || loading}
+                      onMouseDown={(e) => e.preventDefault()}
                       className="py-2.5 sm:py-3 px-4 sm:px-5 bg-zinc-200 hover:bg-white active:bg-zinc-300 text-black font-semibold rounded-xl text-sm transition-colors disabled:opacity-20 shrink-0"
                     >
                       {loading ? "..." : "Submit"}
