@@ -64,10 +64,18 @@ export default function GamePage() {
   const [opponentWon, setOpponentWon] = useState(false);
   const [finalScore, setFinalScore] = useState<ScoreBreakdown | null>(null);
 
+  // Feature 2b: Peer Rematch
+  const [rematchState, setRematchState] = useState<"idle" | "requested" | "starting">("idle");
+
   const inputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const ablyChannelRef = useRef<any>(null);
   const defCacheRef = useRef<Record<string, { partOfSpeech?: string; definition: string }>>({});
+  // Rematch refs (mutable so channel subscribers never read stale values)
+  const isHostRef = useRef(false);
+  const rematchRequestedRef = useRef(false);
+  const rematchOpponentRef = useRef(false);
+  const rematchStartedRef = useRef(false);
 
   // Word definition tooltip/card state
   const [activeDefinition, setActiveDefinition] = useState<{
@@ -201,6 +209,7 @@ export default function GamePage() {
     const code = Math.random().toString(36).substring(2, 6).toUpperCase();
     setRoomCode(code);
     setIsHost(true);
+    isHostRef.current = true;
     setLobbyStatus("hosting");
     setView("lobby");
     setPendingGuest(null);
@@ -248,6 +257,23 @@ export default function GamePage() {
         }
       }
     });
+
+    // Feature 2b: Peer rematch handshake (identical on host + challenger side)
+    channel.subscribe("rematch_request", (msg: any) => {
+      if (msg.data.clientId === myClientId) return;
+      rematchOpponentRef.current = true;
+      maybeStartRematch();
+    });
+
+    channel.subscribe("rematch_cancel", (msg: any) => {
+      if (msg.data.clientId === myClientId) return;
+      rematchOpponentRef.current = false;
+    });
+
+    channel.subscribe("rematch_start", (msg: any) => {
+      if (isHostRef.current || msg.data.clientId === myClientId) return;
+      startRematchRound(msg.data.targetPair as WordPair);
+    });
   };
 
   const handleAcceptGuest = () => {
@@ -286,6 +312,7 @@ export default function GamePage() {
 
     setRoomCode(code);
     setIsHost(false);
+    isHostRef.current = false;
     setLobbyStatus("joining");
     setView("lobby");
 
@@ -348,6 +375,98 @@ export default function GamePage() {
         }
       }
     });
+
+    // Feature 2b: Peer rematch handshake (identical on host + challenger side)
+    channel.subscribe("rematch_request", (msg: any) => {
+      if (msg.data.clientId === myClientId) return;
+      rematchOpponentRef.current = true;
+      maybeStartRematch();
+    });
+
+    channel.subscribe("rematch_cancel", (msg: any) => {
+      if (msg.data.clientId === myClientId) return;
+      rematchOpponentRef.current = false;
+    });
+
+    channel.subscribe("rematch_start", (msg: any) => {
+      if (isHostRef.current || msg.data.clientId === myClientId) return;
+      startRematchRound(msg.data.targetPair as WordPair);
+    });
+  };
+
+  // Feature 2b: Peer Rematch
+  const startRematchRound = (pair: WordPair) => {
+    setActiveDefinition(null);
+    setTargetPair(pair);
+    setTargetProximity(pair.baselineScore ?? 15);
+    setHistory([{ word: pair.source, relatednessToPrevious: 100, scoreVal: 3.0 }]);
+    setNextWord("");
+    setFeedback(null);
+    setHasWon(false);
+    setOpponentWon(false);
+    setFinalScore(null);
+    setFailedAttempts(0);
+    setCopied(false);
+    setProximityDelta(null);
+    setOpponent((prev) => ({
+      clientId: prev?.clientId ?? "",
+      name: prev?.name ?? "Opponent",
+      steps: [{ step: 1, relatedness: 100 }],
+      hasWon: false,
+    }));
+    rematchRequestedRef.current = false;
+    rematchOpponentRef.current = false;
+    rematchStartedRef.current = false;
+    setRematchState("idle");
+    setTimeout(() => inputRef.current?.focus(), 150);
+  };
+
+  const maybeStartRematch = async () => {
+    if (!rematchRequestedRef.current || !rematchOpponentRef.current || rematchStartedRef.current) return;
+    rematchStartedRef.current = true;
+    if (!isHostRef.current) return; // challenger waits for the host to share a fresh pair
+
+    setRematchState("starting");
+    try {
+      const res = await fetch("/api/pair");
+      const pair: WordPair = await res.json();
+      ablyChannelRef.current?.publish("rematch_start", {
+        clientId: myClientId,
+        targetPair: pair,
+      });
+      startRematchRound(pair);
+    } catch (err) {
+      console.error("Failed to load rematch pair:", err);
+      rematchStartedRef.current = false;
+      setRematchState("requested");
+      setFeedback({ type: "error", message: "Failed to start rematch. Please try again." });
+    }
+  };
+
+  const requestRematch = () => {
+    if (!ablyChannelRef.current || rematchStartedRef.current) return;
+
+    // Second tap on the pending button cancels the request
+    if (rematchRequestedRef.current) {
+      rematchRequestedRef.current = false;
+      rematchOpponentRef.current = false;
+      setRematchState("idle");
+      ablyChannelRef.current.publish("rematch_cancel", { clientId: myClientId });
+      return;
+    }
+
+    rematchRequestedRef.current = true;
+    setRematchState("requested");
+    ablyChannelRef.current.publish("rematch_request", { clientId: myClientId });
+    maybeStartRematch();
+  };
+
+  const goHome = () => {
+    rematchRequestedRef.current = false;
+    rematchOpponentRef.current = false;
+    rematchStartedRef.current = false;
+    setRematchState("idle");
+    setView("home");
   };
 
   const currentWord = history.length > 0 ? history[history.length - 1].word : "";
@@ -1100,6 +1219,24 @@ Score: ${finalScore.totalScore.toLocaleString()} pts • Cohesion: ${finalScore.
                     </div>
                   )}
 
+                  {gameType === "peer" && (
+                    <button
+                      onClick={requestRematch}
+                      disabled={rematchState === "starting"}
+                      className={`w-full py-2 sm:py-2.5 font-semibold rounded-lg text-sm transition-colors ${
+                        rematchState === "idle"
+                          ? "bg-white text-black hover:bg-zinc-200"
+                          : "bg-zinc-800 text-zinc-200 hover:text-white hover:bg-zinc-700 border border-zinc-700"
+                      }`}
+                    >
+                      {rematchState === "idle"
+                        ? "Rematch"
+                        : rematchState === "requested"
+                        ? "Waiting for opponent…"
+                        : "Starting round…"}
+                    </button>
+                  )}
+
                   <div className="flex gap-2 pt-0.5">
                     <button
                       onClick={copyShareText}
@@ -1109,7 +1246,7 @@ Score: ${finalScore.totalScore.toLocaleString()} pts • Cohesion: ${finalScore.
                     </button>
 
                     <button
-                      onClick={() => (gameType === "peer" ? setView("home") : initGame(gameType))}
+                      onClick={() => (gameType === "peer" ? goHome() : initGame(gameType))}
                       className="flex-1 py-2 sm:py-2.5 bg-zinc-800 text-zinc-200 hover:text-white hover:bg-zinc-700 font-semibold rounded-lg text-sm transition-colors border border-zinc-700"
                     >
                       {gameType === "peer" ? "Main Menu" : "Play Next"}
