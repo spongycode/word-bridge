@@ -714,13 +714,13 @@ Score: ${finalScore.totalScore.toLocaleString()} pts • Cohesion: ${finalScore.
   }
 
   // ==========================================
-  // VIEW 3: ACTIVE GAME (Minimalist Monochrome)
+  // VIEW 3: ACTIVE GAME (Mobile Viewport Optimized)
   // ==========================================
   return (
-    <div className="min-h-screen bg-black text-zinc-100 flex flex-col items-center justify-between p-4 sm:p-6 selection:bg-zinc-800 selection:text-white">
-      {/* Header */}
-      <header className="w-full max-w-xl flex items-center justify-between py-2 border-b border-zinc-800/40 mb-4">
-        <div className="flex items-center gap-3">
+    <div className="h-[100dvh] max-h-[100dvh] overflow-hidden bg-black text-zinc-100 flex flex-col items-center justify-between p-2 sm:p-4 md:p-6 selection:bg-zinc-800 selection:text-white">
+      {/* Header (shrink-0) */}
+      <header className="w-full max-w-xl flex items-center justify-between py-1.5 sm:py-2 border-b border-zinc-800/40 mb-2 sm:mb-3 shrink-0">
+        <div className="flex items-center gap-2.5 sm:gap-3">
           <button
             onClick={() => setView("home")}
             className="text-xs text-zinc-400 hover:text-white transition-colors"
@@ -728,7 +728,7 @@ Score: ${finalScore.totalScore.toLocaleString()} pts • Cohesion: ${finalScore.
             ← Exit
           </button>
           <span className="text-zinc-700">/</span>
-          <span className="text-xs font-mono uppercase tracking-wider text-zinc-400">
+          <span className="text-xs font-mono uppercase tracking-wider text-zinc-400 truncate max-w-[130px] sm:max-w-none">
             {gameType === "daily"
               ? "Daily Challenge"
               : gameType === "peer"
@@ -737,16 +737,17 @@ Score: ${finalScore.totalScore.toLocaleString()} pts • Cohesion: ${finalScore.
           </span>
         </div>
 
-        <div className="flex items-center gap-3 text-xs font-mono">
-          <span className="text-zinc-500">POTENTIAL:</span>
+        <div className="flex items-center gap-2 text-xs font-mono">
+          <span className="text-zinc-500 hidden sm:inline">POTENTIAL:</span>
+          <span className="text-zinc-500 sm:hidden">PTS:</span>
           <span className="text-white font-semibold">{currentLiveScore.toLocaleString()}</span>
         </div>
       </header>
 
       {/* Main Game Container */}
-      <main className="w-full max-w-xl flex-1 flex flex-col justify-between bg-zinc-950 border border-zinc-800/40 rounded-2xl p-5 sm:p-7 shadow-xl relative">
+      <main className="w-full max-w-xl flex-1 flex flex-col justify-between bg-zinc-950 border border-zinc-800/40 rounded-xl sm:rounded-2xl p-3 sm:p-5 shadow-xl relative min-h-0 overflow-hidden">
         {loadingPair || !targetPair ? (
-          <div className="flex-1 flex flex-col items-center justify-center min-h-[360px] space-y-3">
+          <div className="flex-1 flex flex-col items-center justify-center min-h-0 space-y-3">
             <div className="w-6 h-6 border-2 border-zinc-700 border-t-white rounded-full animate-spin"></div>
             <p className="text-xs font-mono text-zinc-500">
               Generating semantic pair...
@@ -754,173 +755,176 @@ Score: ${finalScore.totalScore.toLocaleString()} pts • Cohesion: ${finalScore.
           </div>
         ) : (
           <>
-            {/* FEATURE 2: FOG OF WAR OPPONENT BAR (Multiplayer) */}
-            {gameType === "peer" && opponent && (
-              <div className="mb-4 p-3 bg-zinc-900 border border-zinc-800 rounded-xl text-xs space-y-2">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <span className="w-1.5 h-1.5 rounded-full bg-white"></span>
-                    <span className="font-semibold text-zinc-200">Opponent: {opponent.name}</span>
-                  </div>
-                  <span className="font-mono text-zinc-500 text-[11px]">
-                    Step {opponent.steps.length} {opponent.hasWon ? "• Finished" : ""}
-                  </span>
-                </div>
-
-                <div className="flex items-center gap-1.5 overflow-x-auto py-0.5">
-                  {opponent.steps.map((st, i) => (
-                    <span
-                      key={i}
-                      className="px-2 py-0.5 rounded text-[10px] font-mono border border-zinc-800 bg-zinc-950 text-zinc-300"
-                      title={hasWon || opponentWon ? st.word : "Word hidden until game finishes"}
-                    >
-                      {hasWon || (opponentWon && st.word)
-                        ? st.word
-                        : `Step ${i + 1} (${st.relatedness}%)`}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Target Goal Card */}
-            <div className="bg-zinc-900/40 border border-zinc-800/40 rounded-xl p-4 sm:p-5 mb-3">
-              <div className="flex items-center justify-between text-[10px] font-mono uppercase tracking-wider text-zinc-400 mb-3">
-                <span className="font-semibold text-zinc-300">
-                  {gameType === "daily" ? "Daily Bridge" : "Challenge"}
-                </span>
-                <span>
-                  {targetPair.difficulty} • {targetPair.baselineScore}% Baseline
-                </span>
-              </div>
-
-              <div className="flex items-center justify-between gap-3">
-                {/* Start Word */}
-                <div className="flex-1 bg-zinc-950/60 border border-zinc-800/30 rounded-xl p-3 text-center">
-                  <div className="flex items-center justify-center gap-1.5 mb-1">
-                    <span className="text-[10px] font-mono uppercase text-zinc-400">Start</span>
-                    <button
-                      type="button"
-                      onClick={() => handleToggleDefinition(targetPair.source)}
-                      className={`text-[10px] w-4 h-4 rounded-full flex items-center justify-center font-mono transition border ${
-                        activeDefinition?.word === targetPair.source.toLowerCase()
-                          ? "bg-zinc-800 text-zinc-100 border-zinc-600"
-                          : "text-zinc-500 hover:text-zinc-300 border-zinc-800 hover:border-zinc-700 bg-zinc-900/60"
-                      }`}
-                      title={`View definition of "${targetPair.source}"`}
-                      aria-label={`View definition of ${targetPair.source}`}
-                    >
-                      ?
-                    </button>
-                  </div>
-                  <span
-                    onClick={() => handleToggleDefinition(targetPair.source)}
-                    className="text-lg sm:text-xl font-bold tracking-tight text-white capitalize cursor-pointer hover:underline underline-offset-4 decoration-zinc-600 transition"
-                    title={`Click for definition of "${targetPair.source}"`}
-                  >
-                    {targetPair.source}
-                  </span>
-                </div>
-
-                {/* Divider Arrow */}
-                <div className="flex flex-col items-center justify-center text-zinc-500 px-1">
-                  <span className="text-base text-zinc-400">→</span>
-                  <span className="text-[9px] font-mono text-zinc-400 mt-0.5">≥ 70%</span>
-                </div>
-
-                {/* Target Word */}
-                <div className="flex-1 bg-zinc-950/60 border border-zinc-800/30 rounded-xl p-3 text-center">
-                  <div className="flex items-center justify-center gap-1.5 mb-1">
-                    <span className="text-[10px] font-mono uppercase text-zinc-400">Target</span>
-                    <button
-                      type="button"
-                      onClick={() => handleToggleDefinition(targetPair.target)}
-                      className={`text-[10px] w-4 h-4 rounded-full flex items-center justify-center font-mono transition border ${
-                        activeDefinition?.word === targetPair.target.toLowerCase()
-                          ? "bg-zinc-800 text-zinc-100 border-zinc-600"
-                          : "text-zinc-500 hover:text-zinc-300 border-zinc-800 hover:border-zinc-700 bg-zinc-900/60"
-                      }`}
-                      title={`View definition of "${targetPair.target}"`}
-                      aria-label={`View definition of ${targetPair.target}`}
-                    >
-                      ?
-                    </button>
-                  </div>
-                  <span
-                    onClick={() => handleToggleDefinition(targetPair.target)}
-                    className="text-lg sm:text-xl font-bold tracking-tight text-white capitalize cursor-pointer hover:underline underline-offset-4 decoration-zinc-600 transition"
-                    title={`Click for definition of "${targetPair.target}"`}
-                  >
-                    {targetPair.target}
-                  </span>
-                </div>
-              </div>
-
-              {/* Word Definition Drawer */}
-              {activeDefinition && (
-                <div className="mt-3.5 pt-3 border-t border-zinc-800 text-left">
-                  <div className="flex items-center justify-between gap-2 mb-1">
+            {/* Top pinned block: Opponent + Goal Card + Compass (shrink-0) */}
+            <div className="shrink-0 space-y-2 mb-2">
+              {/* FEATURE 2: FOG OF WAR OPPONENT BAR (Multiplayer) */}
+              {gameType === "peer" && opponent && (
+                <div className="p-2 sm:p-2.5 bg-zinc-900 border border-zinc-800 rounded-xl text-xs space-y-1">
+                  <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
-                      <span className="font-semibold text-white capitalize text-sm">
-                        {activeDefinition.word}
-                      </span>
-                      {activeDefinition.partOfSpeech && (
-                        <span className="text-[11px] font-mono italic text-zinc-400">
-                          [{activeDefinition.partOfSpeech}]
-                        </span>
-                      )}
-                      {activeDefinition.loading && (
-                        <span className="w-2.5 h-2.5 border border-zinc-500 border-t-white rounded-full animate-spin"></span>
-                      )}
+                      <span className="w-1.5 h-1.5 rounded-full bg-white"></span>
+                      <span className="font-semibold text-zinc-200">Opponent: {opponent.name}</span>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => setActiveDefinition(null)}
-                      className="text-zinc-500 hover:text-white text-xs px-1.5 py-0.5 rounded transition"
-                      aria-label="Close definition"
-                    >
-                      ✕
-                    </button>
+                    <span className="font-mono text-zinc-500 text-[11px]">
+                      Step {opponent.steps.length} {opponent.hasWon ? "• Finished" : ""}
+                    </span>
                   </div>
-                  <p className="text-zinc-300 text-xs leading-relaxed">
-                    {activeDefinition.definition}
-                  </p>
+
+                  <div className="flex items-center gap-1.5 overflow-x-auto py-0.5">
+                    {opponent.steps.map((st, i) => (
+                      <span
+                        key={i}
+                        className="px-2 py-0.5 rounded text-[10px] font-mono border border-zinc-800 bg-zinc-950 text-zinc-300"
+                        title={hasWon || opponentWon ? st.word : "Word hidden until game finishes"}
+                      >
+                        {hasWon || (opponentWon && st.word)
+                          ? st.word
+                          : `Step ${i + 1} (${st.relatedness}%)`}
+                      </span>
+                    ))}
+                  </div>
                 </div>
               )}
-            </div>
 
-            {/* FEATURE 1: SEMANTIC PROXIMITY BAR */}
-            <div className="mb-3 px-4 py-2.5 bg-zinc-900/40 border border-zinc-800/30 rounded-xl flex items-center justify-between text-xs font-mono">
-              <div className="flex items-center gap-2">
-                <span className="text-zinc-400 text-[11px] uppercase tracking-wider">
-                  Target Proximity:
-                </span>
-                <span className="font-bold text-white">{targetProximity}%</span>
+              {/* Target Goal Card */}
+              <div className="bg-zinc-900/40 border border-zinc-800/40 rounded-xl p-2.5 sm:p-4">
+                <div className="flex items-center justify-between text-[10px] font-mono uppercase tracking-wider text-zinc-400 mb-1.5">
+                  <span className="font-semibold text-zinc-300">
+                    {gameType === "daily" ? "Daily Bridge" : "Challenge"}
+                  </span>
+                  <span>
+                    {targetPair.difficulty} • {targetPair.baselineScore}% Baseline
+                  </span>
+                </div>
+
+                <div className="flex items-center justify-between gap-2 sm:gap-3">
+                  {/* Start Word */}
+                  <div className="flex-1 bg-zinc-950/60 border border-zinc-800/30 rounded-lg sm:rounded-xl p-2 sm:p-3 text-center">
+                    <div className="flex items-center justify-center gap-1 mb-0.5">
+                      <span className="text-[9px] sm:text-[10px] font-mono uppercase text-zinc-400">Start</span>
+                      <button
+                        type="button"
+                        onClick={() => handleToggleDefinition(targetPair.source)}
+                        className={`text-[9px] sm:text-[10px] w-3.5 h-3.5 sm:w-4 sm:h-4 rounded-full flex items-center justify-center font-mono transition border ${
+                          activeDefinition?.word === targetPair.source.toLowerCase()
+                            ? "bg-zinc-800 text-zinc-100 border-zinc-600"
+                            : "text-zinc-500 hover:text-zinc-300 border-zinc-800 hover:border-zinc-700 bg-zinc-900/60"
+                        }`}
+                        title={`View definition of "${targetPair.source}"`}
+                        aria-label={`View definition of ${targetPair.source}`}
+                      >
+                        ?
+                      </button>
+                    </div>
+                    <span
+                      onClick={() => handleToggleDefinition(targetPair.source)}
+                      className="text-base sm:text-xl font-bold tracking-tight text-white capitalize cursor-pointer hover:underline underline-offset-4 decoration-zinc-600 transition truncate block"
+                      title={`Click for definition of "${targetPair.source}"`}
+                    >
+                      {targetPair.source}
+                    </span>
+                  </div>
+
+                  {/* Divider Arrow */}
+                  <div className="flex flex-col items-center justify-center text-zinc-500 px-0.5 sm:px-1 shrink-0">
+                    <span className="text-sm sm:text-base text-zinc-400">→</span>
+                    <span className="text-[8px] sm:text-[9px] font-mono text-zinc-400">≥ 70%</span>
+                  </div>
+
+                  {/* Target Word */}
+                  <div className="flex-1 bg-zinc-950/60 border border-zinc-800/30 rounded-lg sm:rounded-xl p-2 sm:p-3 text-center">
+                    <div className="flex items-center justify-center gap-1 mb-0.5">
+                      <span className="text-[9px] sm:text-[10px] font-mono uppercase text-zinc-400">Target</span>
+                      <button
+                        type="button"
+                        onClick={() => handleToggleDefinition(targetPair.target)}
+                        className={`text-[9px] sm:text-[10px] w-3.5 h-3.5 sm:w-4 sm:h-4 rounded-full flex items-center justify-center font-mono transition border ${
+                          activeDefinition?.word === targetPair.target.toLowerCase()
+                            ? "bg-zinc-800 text-zinc-100 border-zinc-600"
+                            : "text-zinc-500 hover:text-zinc-300 border-zinc-800 hover:border-zinc-700 bg-zinc-900/60"
+                        }`}
+                        title={`View definition of "${targetPair.target}"`}
+                        aria-label={`View definition of ${targetPair.target}`}
+                      >
+                        ?
+                      </button>
+                    </div>
+                    <span
+                      onClick={() => handleToggleDefinition(targetPair.target)}
+                      className="text-base sm:text-xl font-bold tracking-tight text-white capitalize cursor-pointer hover:underline underline-offset-4 decoration-zinc-600 transition truncate block"
+                      title={`Click for definition of "${targetPair.target}"`}
+                    >
+                      {targetPair.target}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Word Definition Drawer */}
+                {activeDefinition && (
+                  <div className="mt-2 pt-2 border-t border-zinc-800 text-left">
+                    <div className="flex items-center justify-between gap-2 mb-1">
+                      <div className="flex items-center gap-2">
+                        <span className="font-semibold text-white capitalize text-xs sm:text-sm">
+                          {activeDefinition.word}
+                        </span>
+                        {activeDefinition.partOfSpeech && (
+                          <span className="text-[10px] font-mono italic text-zinc-400">
+                            [{activeDefinition.partOfSpeech}]
+                          </span>
+                        )}
+                        {activeDefinition.loading && (
+                          <span className="w-2.5 h-2.5 border border-zinc-500 border-t-white rounded-full animate-spin"></span>
+                        )}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setActiveDefinition(null)}
+                        className="text-zinc-500 hover:text-white text-xs px-1.5 py-0.5 rounded transition"
+                        aria-label="Close definition"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                    <p className="text-zinc-300 text-[11px] sm:text-xs leading-relaxed max-h-20 overflow-y-auto">
+                      {activeDefinition.definition}
+                    </p>
+                  </div>
+                )}
               </div>
 
-              <div className="flex items-center gap-3">
-                {proximityDelta === "hotter" && (
-                  <span className="text-zinc-300 text-[11px]">↑ Heating Up</span>
-                )}
-                {proximityDelta === "colder" && (
-                  <span className="text-zinc-500 text-[11px]">↓ Getting Colder</span>
-                )}
+              {/* FEATURE 1: SEMANTIC PROXIMITY BAR */}
+              <div className="px-3 sm:px-4 py-1.5 sm:py-2 bg-zinc-900/40 border border-zinc-800/30 rounded-xl flex items-center justify-between text-xs font-mono">
+                <div className="flex items-center gap-2">
+                  <span className="text-zinc-400 text-[10px] sm:text-[11px] uppercase tracking-wider">
+                    Proximity:
+                  </span>
+                  <span className="font-bold text-white text-xs">{targetProximity}%</span>
+                </div>
 
-                <div className="w-16 sm:w-24 bg-zinc-800/80 h-1.5 rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-zinc-300 transition-all duration-300"
-                    style={{ width: `${Math.min(100, targetProximity)}%` }}
-                  ></div>
+                <div className="flex items-center gap-2.5 sm:gap-3">
+                  {proximityDelta === "hotter" && (
+                    <span className="text-zinc-300 text-[10px] sm:text-[11px]">↑ Heating Up</span>
+                  )}
+                  {proximityDelta === "colder" && (
+                    <span className="text-zinc-500 text-[10px] sm:text-[11px]">↓ Colder</span>
+                  )}
+
+                  <div className="w-16 sm:w-24 bg-zinc-800/80 h-1.5 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-zinc-300 transition-all duration-300"
+                      style={{ width: `${Math.min(100, targetProximity)}%` }}
+                    ></div>
+                  </div>
                 </div>
               </div>
             </div>
 
-            {/* Path History Chain */}
+            {/* Middle flex area: Pathway History Chain (flex-1 min-h-0 overflow-y-auto) */}
             <div
-              className="flex-1 min-h-[170px] max-h-[220px] overflow-y-auto pr-1 space-y-1.5 mb-3"
+              className="flex-1 min-h-0 overflow-y-auto pr-1 space-y-1.5 mb-2"
               ref={scrollRef}
             >
-              <div className="flex items-center justify-between text-[10px] font-mono uppercase tracking-wider text-zinc-400 mb-1.5">
+              <div className="flex items-center justify-between text-[10px] font-mono uppercase tracking-wider text-zinc-400 mb-1 sticky top-0 bg-zinc-950/95 py-0.5 z-10 backdrop-blur-sm">
                 <span>Pathway ({history.length} {history.length === 1 ? "word" : "words"})</span>
                 <span>Misses: <b className="text-zinc-300">{failedAttempts}</b></span>
               </div>
@@ -931,14 +935,14 @@ Score: ${finalScore.totalScore.toLocaleString()} pts • Cohesion: ${finalScore.
                 return (
                   <div
                     key={idx}
-                    className={`flex items-center justify-between px-3.5 py-2 rounded-lg border text-sm transition ${
+                    className={`flex items-center justify-between px-3 py-1.5 sm:py-2 rounded-lg border text-xs sm:text-sm transition ${
                       isTarget
                         ? "bg-zinc-200 text-black border-transparent font-semibold"
                         : "bg-zinc-900/30 border-zinc-800/30 text-zinc-200"
                     }`}
                   >
-                    <div className="flex items-center gap-2.5">
-                      <span className={`font-mono text-xs ${isTarget ? "text-zinc-600" : "text-zinc-500"}`}>
+                    <div className="flex items-center gap-2">
+                      <span className={`font-mono text-[11px] sm:text-xs ${isTarget ? "text-zinc-600" : "text-zinc-500"}`}>
                         {String(idx + 1).padStart(2, "0")}
                       </span>
                       <span className="capitalize font-medium tracking-tight">
@@ -948,7 +952,7 @@ Score: ${finalScore.totalScore.toLocaleString()} pts • Cohesion: ${finalScore.
 
                     {!isStart && (
                       <span
-                        className={`font-mono text-xs ${
+                        className={`font-mono text-[11px] sm:text-xs ${
                           isTarget ? "text-zinc-700 font-semibold" : "text-zinc-400"
                         }`}
                       >
@@ -956,7 +960,7 @@ Score: ${finalScore.totalScore.toLocaleString()} pts • Cohesion: ${finalScore.
                       </span>
                     )}
                     {isStart && (
-                      <span className="font-mono text-[10px] uppercase text-zinc-400">
+                      <span className="font-mono text-[9px] sm:text-[10px] uppercase text-zinc-400">
                         Origin
                       </span>
                     )}
@@ -965,151 +969,161 @@ Score: ${finalScore.totalScore.toLocaleString()} pts • Cohesion: ${finalScore.
               })}
             </div>
 
-            {/* Notification / Feedback */}
-            {feedback && (
-              <div
-                className={`p-3 mb-3 rounded-xl text-xs font-mono border flex items-center justify-between gap-3 ${
-                  feedback.type === "error"
-                    ? "bg-zinc-900 border-zinc-800 text-rose-400"
-                    : "bg-zinc-900 border-zinc-800 text-zinc-200"
-                }`}
-              >
-                <span>{feedback.message}</span>
-                {feedback.score !== undefined && (
-                  <span className="font-bold text-white px-2 py-0.5 rounded bg-zinc-800 shrink-0">
-                    {feedback.score}%
-                  </span>
-                )}
-              </div>
-            )}
-
-            {/* GameOver & Summary View */}
-            {(hasWon || opponentWon) && (
-              <div className="p-6 bg-zinc-900 border border-zinc-800 rounded-xl text-center space-y-4 mb-2">
-                <div className="space-y-1">
-                  <span className="text-[11px] font-mono uppercase tracking-widest text-zinc-500 block">
-                    {hasWon ? (opponentWon ? "Finished 2nd" : "Bridge Completed") : "Match Finished"}
-                  </span>
-                  <div className="text-3xl font-bold font-mono tracking-tight text-white">
-                    Rank {finalScore?.rank ?? "A"}
-                  </div>
-                  <div className="text-xs text-zinc-400 font-mono">
-                    {finalScore ? `${finalScore.totalScore.toLocaleString()} points` : ""}
-                  </div>
-                </div>
-
-                {/* Multiplayer Reveal */}
-                {gameType === "peer" && opponent?.finalHistory && (
-                  <div className="p-3 bg-zinc-950 border border-zinc-800/40 rounded-lg text-xs text-left space-y-1.5 font-mono">
-                    <span className="text-[10px] uppercase tracking-wider text-zinc-400 block">
-                      Paths Side-by-Side
+            {/* Bottom pinned block: Feedback + Input or GameOver (shrink-0) */}
+            <div className="shrink-0 space-y-1.5 pt-1.5 border-t border-zinc-900/80">
+              {/* Notification / Feedback */}
+              {feedback && (
+                <div
+                  className={`p-2 sm:p-2.5 rounded-xl text-xs font-mono border flex items-center justify-between gap-3 ${
+                    feedback.type === "error"
+                      ? "bg-zinc-900 border-zinc-800 text-rose-400"
+                      : "bg-zinc-900 border-zinc-800 text-zinc-200"
+                  }`}
+                >
+                  <span className="truncate">{feedback.message}</span>
+                  {feedback.score !== undefined && (
+                    <span className="font-bold text-white px-2 py-0.5 rounded bg-zinc-800 shrink-0">
+                      {feedback.score}%
                     </span>
-                    <div className="truncate text-zinc-300">
-                      <span className="text-white font-semibold">You: </span>
-                      {history.map((s) => s.word).join(" → ")}
-                    </div>
-                    <div className="truncate text-zinc-400">
-                      <span className="text-zinc-300 font-semibold">Opponent: </span>
-                      {opponent.finalHistory.join(" → ")}
-                    </div>
-                  </div>
-                )}
-
-                {/* Daily Challenge Global Benchmark */}
-                {gameType === "daily" && (
-                  <div className="p-3 bg-zinc-950 border border-zinc-800/40 rounded-lg text-xs font-mono text-left">
-                    <span className="text-[10px] uppercase text-zinc-400 block mb-0.5">
-                      Daily Benchmark
-                    </span>
-                    <p className="text-zinc-300">
-                      Solved in {history.length - 1} steps. Target par: 4 steps.
-                    </p>
-                  </div>
-                )}
-
-                {finalScore && (
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs font-mono">
-                    <div className="bg-zinc-950 border border-zinc-800/40 p-2.5 rounded-lg">
-                      <span className="text-[10px] text-zinc-400 block">Difficulty</span>
-                      <span className="font-semibold text-white">+{finalScore.difficultyBonus}</span>
-                    </div>
-                    <div className="bg-zinc-950 border border-zinc-800/40 p-2.5 rounded-lg">
-                      <span className="text-[10px] text-zinc-400 block">Efficiency</span>
-                      <span className="font-semibold text-white">+{finalScore.stepEfficiency}</span>
-                    </div>
-                    <div className="bg-zinc-950 border border-zinc-800/40 p-2.5 rounded-lg">
-                      <span className="text-[10px] text-zinc-400 block">Cohesion</span>
-                      <span className="font-semibold text-white">{finalScore.averageSimilarity}%</span>
-                    </div>
-                    <div className="bg-zinc-950 border border-zinc-800/40 p-2.5 rounded-lg">
-                      <span className="text-[10px] text-zinc-400 block">Misses</span>
-                      <span className="font-semibold text-zinc-400">-{finalScore.missPenalty}</span>
-                    </div>
-                  </div>
-                )}
-
-                <div className="flex gap-2 pt-2">
-                  <button
-                    onClick={copyShareText}
-                    className="flex-1 py-3 bg-white text-black font-semibold rounded-lg text-sm hover:bg-zinc-200 transition-colors"
-                  >
-                    {copied ? "Copied" : "Share Result"}
-                  </button>
-
-                  <button
-                    onClick={() => (gameType === "peer" ? setView("home") : initGame(gameType))}
-                    className="flex-1 py-3 bg-zinc-800 text-zinc-200 hover:text-white hover:bg-zinc-700 font-semibold rounded-lg text-sm transition-colors border border-zinc-700"
-                  >
-                    {gameType === "peer" ? "Main Menu" : "Play Next"}
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {/* Input Form */}
-            {!hasWon && !opponentWon && (
-              <form onSubmit={handleStepSubmit} className="space-y-2">
-                <div className="flex gap-2">
-                  <input
-                    ref={inputRef}
-                    type="text"
-                    placeholder={`Step from "${currentWord}"...`}
-                    value={nextWord}
-                    onChange={handleInputChange}
-                    disabled={loading}
-                    autoFocus
-                    className="flex-1 px-4 py-3 bg-zinc-900/60 border border-zinc-800/50 rounded-xl text-white placeholder-zinc-600 focus:outline-none focus:border-zinc-700 font-medium text-sm sm:text-base transition-colors"
-                  />
-
-                  <button
-                    type="submit"
-                    disabled={!canSubmit}
-                    className="py-3 px-5 bg-zinc-200 hover:bg-white active:bg-zinc-300 text-black font-semibold rounded-xl text-sm transition-colors disabled:opacity-20 shrink-0"
-                  >
-                    {loading ? "Checking..." : "Submit"}
-                  </button>
-                </div>
-
-                <div className="flex justify-between items-center text-[10px] font-mono text-zinc-500 px-1">
-                  <span>Rule: ≥ 70% related to "{currentWord}"</span>
-                  {nextWord.length === 1 ? (
-                    <span className="text-zinc-400">Min 2 letters</span>
-                  ) : isDuplicate ? (
-                    <span className="text-rose-400">Already in chain</span>
-                  ) : (
-                    <span>Real-time semantic check</span>
                   )}
                 </div>
-              </form>
-            )}
+              )}
+
+              {/* GameOver View */}
+              {(hasWon || opponentWon) ? (
+                <div className="p-3.5 sm:p-5 bg-zinc-900/80 border border-zinc-800/40 rounded-xl text-center space-y-2.5 sm:space-y-3">
+                  <div className="space-y-0.5">
+                    <span className="text-[10px] font-mono uppercase tracking-widest text-zinc-500 block">
+                      {hasWon ? (opponentWon ? "Finished 2nd" : "Bridge Completed") : "Match Finished"}
+                    </span>
+                    <div className="text-2xl sm:text-3xl font-bold font-mono tracking-tight text-white">
+                      Rank {finalScore?.rank ?? "A"}
+                    </div>
+                    <div className="text-xs text-zinc-400 font-mono">
+                      {finalScore ? `${finalScore.totalScore.toLocaleString()} points` : ""}
+                    </div>
+                  </div>
+
+                  {/* Multiplayer Reveal */}
+                  {gameType === "peer" && opponent?.finalHistory && (
+                    <div className="p-2 sm:p-2.5 bg-zinc-950 border border-zinc-800/40 rounded-lg text-xs text-left space-y-1 font-mono">
+                      <span className="text-[10px] uppercase tracking-wider text-zinc-400 block">
+                        Paths Side-by-Side
+                      </span>
+                      <div className="truncate text-zinc-300">
+                        <span className="text-white font-semibold">You: </span>
+                        {history.map((s) => s.word).join(" → ")}
+                      </div>
+                      <div className="truncate text-zinc-400">
+                        <span className="text-zinc-300 font-semibold">Opponent: </span>
+                        {opponent.finalHistory.join(" → ")}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Daily Challenge Global Benchmark */}
+                  {gameType === "daily" && (
+                    <div className="p-2 sm:p-2.5 bg-zinc-950 border border-zinc-800/40 rounded-lg text-xs font-mono text-left">
+                      <span className="text-[10px] uppercase text-zinc-400 block mb-0.5">
+                        Daily Benchmark
+                      </span>
+                      <p className="text-zinc-300 text-xs">
+                        Solved in {history.length - 1} steps. Target par: 4 steps.
+                      </p>
+                    </div>
+                  )}
+
+                  {finalScore && (
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-1 sm:gap-1.5 text-xs font-mono">
+                      <div className="bg-zinc-950 border border-zinc-800/40 p-1.5 sm:p-2 rounded-lg">
+                        <span className="text-[9px] text-zinc-400 block">Difficulty</span>
+                        <span className="font-semibold text-white">+{finalScore.difficultyBonus}</span>
+                      </div>
+                      <div className="bg-zinc-950 border border-zinc-800/40 p-1.5 sm:p-2 rounded-lg">
+                        <span className="text-[9px] text-zinc-400 block">Efficiency</span>
+                        <span className="font-semibold text-white">+{finalScore.stepEfficiency}</span>
+                      </div>
+                      <div className="bg-zinc-950 border border-zinc-800/40 p-1.5 sm:p-2 rounded-lg">
+                        <span className="text-[9px] text-zinc-400 block">Cohesion</span>
+                        <span className="font-semibold text-white">{finalScore.averageSimilarity}%</span>
+                      </div>
+                      <div className="bg-zinc-950 border border-zinc-800/40 p-1.5 sm:p-2 rounded-lg">
+                        <span className="text-[9px] text-zinc-400 block">Misses</span>
+                        <span className="font-semibold text-zinc-400">-{finalScore.missPenalty}</span>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="flex gap-2 pt-0.5">
+                    <button
+                      onClick={copyShareText}
+                      className="flex-1 py-2 sm:py-2.5 bg-white text-black font-semibold rounded-lg text-sm hover:bg-zinc-200 transition-colors"
+                    >
+                      {copied ? "Copied" : "Share Result"}
+                    </button>
+
+                    <button
+                      onClick={() => (gameType === "peer" ? setView("home") : initGame(gameType))}
+                      className="flex-1 py-2 sm:py-2.5 bg-zinc-800 text-zinc-200 hover:text-white hover:bg-zinc-700 font-semibold rounded-lg text-sm transition-colors border border-zinc-700"
+                    >
+                      {gameType === "peer" ? "Main Menu" : "Play Next"}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                /* Input Form */
+                <form onSubmit={handleStepSubmit} className="space-y-1.5">
+                  {/* Contextual Mini Anchor Bar directly above input */}
+                  <div className="flex items-center justify-between text-[11px] font-mono px-1 text-zinc-400">
+                    <div className="flex items-center gap-1.5 truncate">
+                      <span className="text-zinc-500">From:</span>
+                      <span className="text-white font-semibold capitalize">{currentWord}</span>
+                      <span className="text-zinc-600">→</span>
+                      <span className="text-zinc-500">Target:</span>
+                      <span className="text-zinc-200 font-semibold capitalize">{targetWord}</span>
+                    </div>
+                    <span className="text-[10px] text-zinc-400 shrink-0 font-mono ml-2">
+                      {targetProximity}%
+                    </span>
+                  </div>
+
+                  <div className="flex gap-2">
+                    <input
+                      ref={inputRef}
+                      type="text"
+                      placeholder={`Step from "${currentWord}"...`}
+                      value={nextWord}
+                      onChange={handleInputChange}
+                      disabled={loading}
+                      autoFocus
+                      className="flex-1 px-3.5 py-2.5 sm:py-3 bg-zinc-900/60 border border-zinc-800/50 rounded-xl text-white placeholder-zinc-600 focus:outline-none focus:border-zinc-700 font-medium text-sm sm:text-base transition-colors"
+                    />
+
+                    <button
+                      type="submit"
+                      disabled={!canSubmit}
+                      className="py-2.5 sm:py-3 px-4 sm:px-5 bg-zinc-200 hover:bg-white active:bg-zinc-300 text-black font-semibold rounded-xl text-sm transition-colors disabled:opacity-20 shrink-0"
+                    >
+                      {loading ? "..." : "Submit"}
+                    </button>
+                  </div>
+
+                  <div className="flex justify-between items-center text-[10px] font-mono text-zinc-500 px-1">
+                    <span>≥ 70% related</span>
+                    {nextWord.length === 1 ? (
+                      <span className="text-zinc-400">Min 2 letters</span>
+                    ) : isDuplicate ? (
+                      <span className="text-rose-400">Already in chain</span>
+                    ) : (
+                      <span>Real-time check</span>
+                    )}
+                  </div>
+                </form>
+              )}
+            </div>
           </>
         )}
       </main>
-
-      {/* Minimal Footer */}
-      <footer className="text-center font-mono text-[11px] text-zinc-600 py-3">
-        WordBridge • Semantic Word Ladder
-      </footer>
     </div>
   );
 }
