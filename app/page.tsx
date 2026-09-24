@@ -724,17 +724,36 @@ export default function GamePage() {
     }
   };
 
-  const copyShareText = () => {
+  const shareResult = async () => {
     if (!targetPair || !finalScore) return;
     const isDailyChallenge = gameType === "daily";
-    const shareText = `WordBridge ${isDailyChallenge ? "(Daily Challenge)" : ""}
-${targetPair.source} ➔ ${targetPair.target}
-Solved in ${history.length - 1} steps • Rank ${finalScore.rank} (${finalScore.title})
-Score: ${finalScore.totalScore.toLocaleString()} pts • Cohesion: ${finalScore.averageSimilarity}%`;
+    const myPath = history.map((s) => s.word).join(" → ");
+    const opponentPath =
+      gameType === "peer" && opponent?.finalHistory
+        ? `Opponent: ${opponent.finalHistory.join(" → ")}`
+        : "";
+    const shareText = [
+      `WordBridge ${isDailyChallenge ? "(Daily Challenge)" : ""}`,
+      `${targetPair.source} ➔ ${targetPair.target}`,
+      `Solved in ${history.length - 1} steps • Rank ${finalScore.rank} (${finalScore.title})`,
+      `Score: ${finalScore.totalScore.toLocaleString()} pts • Cohesion: ${finalScore.averageSimilarity}%`,
+      `Path: ${myPath}`,
+      opponentPath,
+    ]
+      .filter(Boolean)
+      .join("\n");
 
-    navigator.clipboard.writeText(shareText);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2500);
+    try {
+      if (navigator.share) {
+        await navigator.share({ title: "WordBridge", text: shareText });
+      } else {
+        await navigator.clipboard.writeText(shareText);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2500);
+      }
+    } catch {
+      // user dismissed the native share sheet — nothing to do
+    }
   };
 
   // ==========================================
@@ -1327,7 +1346,7 @@ Score: ${finalScore.totalScore.toLocaleString()} pts • Cohesion: ${finalScore.
 
                   <div className="flex gap-2 pt-0.5">
                     <button
-                      onClick={copyShareText}
+                      onClick={shareResult}
                       className="flex-1 py-2 sm:py-2.5 bg-white text-black font-semibold rounded-lg text-sm hover:bg-zinc-200 transition-colors"
                     >
                       {copied ? "Copied" : "Share Result"}
