@@ -5,26 +5,23 @@ import { WordPair } from "./domains";
 import { calculateGameScore, ScoreBreakdown } from "./lib/scoring";
 import { getAblyRealtime } from "./lib/ably";
 import { fetchWordDefinition } from "./lib/dictionary";
-
-interface StepRecord {
-  word: string;
-  relatednessToPrevious: number;
-  scoreVal: number;
-}
-
-interface OpponentStep {
-  step: number;
-  relatedness: number;
-  word?: string; // Revealed only at game over
-}
-
-interface OpponentState {
-  clientId: string;
-  name: string;
-  steps: OpponentStep[];
-  hasWon: boolean;
-  finalHistory?: string[];
-}
+import {
+  getOrCreateDeviceId,
+  getOrCreateUsername,
+  saveUsername,
+  generateRandomUsername,
+  saveActiveGameSession,
+  getActiveGameSession,
+  clearActiveGameSession,
+  saveMatchResult,
+  getMatchHistory,
+  clearMatchHistory,
+  MatchHistoryItem,
+  ActiveGameSession,
+  OpponentState,
+  OpponentStep,
+  StepRecord,
+} from "./lib/player";
 
 export default function GamePage() {
   // Navigation: "home" | "lobby" | "playing"
@@ -46,13 +43,22 @@ export default function GamePage() {
   const [proximityDelta, setProximityDelta] = useState<"hotter" | "colder" | null>(null);
 
   // Feature 2: Fog of War Peer Multiplayer
+  const [deviceId, setDeviceId] = useState<string>("");
+  const [username, setUsername] = useState<string>("Player");
+  const [isEditingUsername, setIsEditingUsername] = useState(false);
+  const [tempUsername, setTempUsername] = useState("");
+  const [activeSavedGame, setActiveSavedGame] = useState<ActiveGameSession | null>(null);
+  const [matchHistory, setMatchHistory] = useState<MatchHistoryItem[]>([]);
+  const [lobbyTab, setLobbyTab] = useState<"lobby" | "history">("lobby");
+  const [expandedMatchId, setExpandedMatchId] = useState<string | null>(null);
+
   const [myClientId, setMyClientId] = useState<string>("");
   const [roomCode, setRoomCode] = useState<string>("");
   const [joinCodeInput, setJoinCodeInput] = useState<string>("");
   const [pendingJoinCode, setPendingJoinCode] = useState<string | null>(null);
   const [isHost, setIsHost] = useState(false);
   const [lobbyStatus, setLobbyStatus] = useState<string>("idle");
-  const [pendingGuest, setPendingGuest] = useState<{ clientId: string; name: string } | null>(null);
+  const [pendingGuest, setPendingGuest] = useState<{ clientId: string; deviceId?: string; name: string } | null>(null);
   const [opponent, setOpponent] = useState<OpponentState | null>(null);
 
   const [feedback, setFeedback] = useState<{
@@ -90,7 +96,15 @@ export default function GamePage() {
   } | null>(null);
 
   useEffect(() => {
-    setMyClientId(`player_${Math.random().toString(36).substring(2, 7)}`);
+    const devId = getOrCreateDeviceId();
+    const uname = getOrCreateUsername();
+    setDeviceId(devId);
+    setUsername(uname);
+    setMyClientId(`${devId}_tab_${Math.random().toString(36).substring(2, 6)}`);
+
+    // Check for active saved session & match history
+    setActiveSavedGame(getActiveGameSession());
+    setMatchHistory(getMatchHistory());
 
     const handleScrollLock = () => {
       if (window.scrollY !== 0) {
@@ -224,6 +238,115 @@ export default function GamePage() {
     }
   };
 
+  const handleRerollUsername = () => {
+    const newName = generateRandomUsername();
+    saveUsername(newName);
+    setUsername(newName);
+  };
+
+  const handleSaveCustomUsername = (name: string) => {
+    const saved = saveUsername(name);
+    setUsername(saved);
+    setIsEditingUsername(false);
+  };
+
+  const handleResumeSavedGame = () => {
+    const session = activeSavedGame || getActiveGameSession();
+    if (!session) return;
+    setActiveDefinition(null);
+    setRoomCode(session.roomCode);
+    setIsHost(session.isHost);
+    isHostRef.current = session.isHost;
+    setTargetPair(session.targetPair);
+    setTargetProximity(session.targetPair.baselineScore ?? 15);
+    setHistory(session.history);
+    historyRef.current = session.history;
+    setOpponent(session.opponent);
+    setHasWon(session.hasWon);
+    setOpponentWon(session.opponentWon);
+    setGameType("peer");
+    setView("playing");
+
+    const ably = getAblyRealtime(myClientId);
+    const channel = ably.channels.get(`game:room_${session.roomCode}`);
+    ablyChannelRef.current = channel;
+
+    channel.subscribe("peer_step", (msg: any) => {
+      if (msg.data.clientId !== myClientId) {
+        setOpponent((prev) => {
+          const currentSteps = prev?.steps ?? [];
+          return {
+            clientId: msg.data.clientId,
+            name: msg.data.name || prev?.name || "Opponent",
+            steps: [
+              ...currentSteps,
+              {
+                step: msg.data.step,
+                relatedness: msg.data.relatedness,
+                word: msg.data.isGameOver ? msg.data.word : undefined,
+              },
+            ],
+            hasWon: msg.data.hasWon,
+            finalHistory: msg.data.finalHistory ?? prev?.finalHistory,
+          };
+        });
+
+        if (msg.data.hasWon) {
+          setOpponentWon(true);
+          revealMyPath();
+          if (session.targetPair) {
+            saveMatchResult({
+              roomCode: session.roomCode,
+              sourceWord: session.targetPair.source,
+              targetWord: session.targetPair.target,
+              myUsername: username,
+              mySteps: Math.max(0, historyRef.current.length - 1),
+              myPath: historyRef.current.map((s) => s.word),
+              opponentName: session.opponent?.name || msg.data.name || "Opponent",
+              opponentSteps: msg.data.finalHistory ? msg.data.finalHistory.length - 1 : undefined,
+              opponentPath: msg.data.finalHistory,
+              result: "lost",
+            });
+            setMatchHistory(getMatchHistory());
+            clearActiveGameSession();
+            setActiveSavedGame(null);
+          }
+        }
+      }
+    });
+
+    channel.subscribe("rematch_request", (msg: any) => {
+      if (msg.data.clientId === myClientId) return;
+      rematchOpponentRef.current = true;
+      maybeStartRematch();
+    });
+
+    channel.subscribe("rematch_cancel", (msg: any) => {
+      if (msg.data.clientId === myClientId) return;
+      rematchOpponentRef.current = false;
+    });
+
+    channel.subscribe("rematch_start", (msg: any) => {
+      if (isHostRef.current || msg.data.clientId === myClientId) return;
+      startRematchRound(msg.data.targetPair as WordPair);
+    });
+
+    channel.subscribe("reveal_path", (msg: any) => {
+      if (msg.data.clientId === myClientId) return;
+      setOpponent((prev) => ({
+        ...(prev ?? { clientId: msg.data.clientId, name: "Opponent", steps: [], hasWon: false }),
+        finalHistory: msg.data.finalHistory,
+      }));
+    });
+
+    setTimeout(() => inputRef.current?.focus(), 150);
+  };
+
+  const handleAbandonSavedGame = () => {
+    clearActiveGameSession();
+    setActiveSavedGame(null);
+  };
+
   // Peer Multiplayer Setup
   const handleHostRoom = async () => {
     const code = Math.random().toString(36).substring(2, 6).toUpperCase();
@@ -244,12 +367,22 @@ export default function GamePage() {
     ablyChannelRef.current = channel;
 
     channel.subscribe("join_request", (msg: any) => {
-      if (msg.data.clientId !== myClientId) {
-        setPendingGuest({
-          clientId: msg.data.clientId,
-          name: msg.data.name || "Challenger",
+      if (msg.data.clientId === myClientId) return;
+
+      // Prevent self-joining from same device / browser
+      if (msg.data.deviceId && msg.data.deviceId === deviceId) {
+        channel.publish("join_rejected", {
+          targetClientId: msg.data.clientId,
+          reason: "Cannot join your own room from the same device.",
         });
+        return;
       }
+
+      setPendingGuest({
+        clientId: msg.data.clientId,
+        deviceId: msg.data.deviceId,
+        name: msg.data.name || "Challenger",
+      });
     });
 
     channel.subscribe("peer_step", (msg: any) => {
@@ -275,6 +408,23 @@ export default function GamePage() {
         if (msg.data.hasWon) {
           setOpponentWon(true);
           revealMyPath();
+          if (pair) {
+            saveMatchResult({
+              roomCode: code,
+              sourceWord: pair.source,
+              targetWord: pair.target,
+              myUsername: username,
+              mySteps: Math.max(0, historyRef.current.length - 1),
+              myPath: historyRef.current.map((s) => s.word),
+              opponentName: pendingGuest?.name || msg.data.name || "Opponent",
+              opponentSteps: msg.data.finalHistory ? msg.data.finalHistory.length - 1 : undefined,
+              opponentPath: msg.data.finalHistory,
+              result: "lost",
+            });
+            setMatchHistory(getMatchHistory());
+            clearActiveGameSession();
+            setActiveSavedGame(null);
+          }
         }
       }
     });
@@ -313,23 +463,40 @@ export default function GamePage() {
     ablyChannelRef.current.publish("join_accepted", {
       targetPair,
       hostId: myClientId,
+      hostName: username,
       guestId: pendingGuest.clientId,
     });
 
-    setOpponent({
+    const initOpponent: OpponentState = {
       clientId: pendingGuest.clientId,
       name: pendingGuest.name,
       steps: [{ step: 1, relatedness: 100 }],
       hasWon: false,
-    });
+    };
+    setOpponent(initOpponent);
 
-    setHistory([
+    const initialHistory = [
       {
         word: targetPair.source,
         relatednessToPrevious: 100,
         scoreVal: 3.0,
       },
-    ]);
+    ];
+    setHistory(initialHistory);
+    historyRef.current = initialHistory;
+
+    // Save active session
+    saveActiveGameSession({
+      roomCode,
+      isHost: true,
+      targetPair,
+      history: initialHistory,
+      hasWon: false,
+      opponentWon: false,
+      opponent: initOpponent,
+      updatedAt: Date.now(),
+    });
+    setActiveSavedGame(getActiveGameSession());
 
     setGameType("peer");
     setView("playing");
@@ -352,28 +519,56 @@ export default function GamePage() {
 
     channel.publish("join_request", {
       clientId: myClientId,
-      name: "Challenger",
+      deviceId,
+      name: username,
+    });
+
+    channel.subscribe("join_rejected", (msg: any) => {
+      if (msg.data.targetClientId === myClientId) {
+        setLobbyStatus("idle");
+        setFeedback({
+          type: "error",
+          message: msg.data.reason || "Failed to join room.",
+        });
+      }
     });
 
     channel.subscribe("join_accepted", (msg: any) => {
+      if (msg.data.guestId && msg.data.guestId !== myClientId) return;
       setActiveDefinition(null);
       const pair: WordPair = msg.data.targetPair;
       setTargetPair(pair);
       setTargetProximity(pair.baselineScore ?? 15);
-      setOpponent({
+      const initOpponent: OpponentState = {
         clientId: msg.data.hostId,
-        name: "Host Player",
+        name: msg.data.hostName || "Host Player",
         steps: [{ step: 1, relatedness: 100 }],
         hasWon: false,
-      });
+      };
+      setOpponent(initOpponent);
 
-      setHistory([
+      const initialHistory = [
         {
           word: pair.source,
           relatednessToPrevious: 100,
           scoreVal: 3.0,
         },
-      ]);
+      ];
+      setHistory(initialHistory);
+      historyRef.current = initialHistory;
+
+      // Save active session
+      saveActiveGameSession({
+        roomCode: code,
+        isHost: false,
+        targetPair: pair,
+        history: initialHistory,
+        hasWon: false,
+        opponentWon: false,
+        opponent: initOpponent,
+        updatedAt: Date.now(),
+      });
+      setActiveSavedGame(getActiveGameSession());
 
       setGameType("peer");
       setView("playing");
@@ -403,6 +598,23 @@ export default function GamePage() {
         if (msg.data.hasWon) {
           setOpponentWon(true);
           revealMyPath();
+          if (targetPair) {
+            saveMatchResult({
+              roomCode: code,
+              sourceWord: targetPair.source,
+              targetWord: targetPair.target,
+              myUsername: username,
+              mySteps: Math.max(0, historyRef.current.length - 1),
+              myPath: historyRef.current.map((s) => s.word),
+              opponentName: opponent?.name || msg.data.name || "Opponent",
+              opponentSteps: msg.data.finalHistory ? msg.data.finalHistory.length - 1 : undefined,
+              opponentPath: msg.data.finalHistory,
+              result: "lost",
+            });
+            setMatchHistory(getMatchHistory());
+            clearActiveGameSession();
+            setActiveSavedGame(null);
+          }
         }
       }
     });
@@ -645,12 +857,24 @@ export default function GamePage() {
       if (gameType === "peer" && ablyChannelRef.current) {
         ablyChannelRef.current.publish("peer_step", {
           clientId: myClientId,
-          name: isHost ? "Host" : "Challenger",
+          name: username,
           step: newHistory.length,
           relatedness: pct,
           hasWon: false,
           isGameOver: false,
         });
+        if (targetPair) {
+          saveActiveGameSession({
+            roomCode,
+            isHost,
+            targetPair,
+            history: newHistory,
+            hasWon: false,
+            opponentWon: false,
+            opponent,
+            updatedAt: Date.now(),
+          });
+        }
       }
 
       const finalizeVictory = (finalSteps: StepRecord[]) => {
@@ -667,13 +891,31 @@ export default function GamePage() {
         if (gameType === "peer" && ablyChannelRef.current) {
           ablyChannelRef.current.publish("peer_step", {
             clientId: myClientId,
-            name: isHost ? "Host" : "Challenger",
+            name: username,
             step: finalSteps.length,
             relatedness: 100,
             hasWon: true,
             isGameOver: true,
             finalHistory: finalSteps.map((s) => s.word),
           });
+        }
+
+        if (gameType === "peer" && targetPair) {
+          saveMatchResult({
+            roomCode,
+            sourceWord: targetPair.source,
+            targetWord: targetPair.target,
+            myUsername: username,
+            mySteps: finalSteps.length - 1,
+            myPath: finalSteps.map((s) => s.word),
+            opponentName: opponent?.name || "Opponent",
+            opponentSteps: opponent?.steps.length,
+            opponentPath: opponent?.finalHistory,
+            result: "won",
+          });
+          setMatchHistory(getMatchHistory());
+          clearActiveGameSession();
+          setActiveSavedGame(null);
         }
       };
 
@@ -756,15 +998,47 @@ export default function GamePage() {
     }
   };
 
+  const totalMatches = matchHistory.length;
+  const winsCount = matchHistory.filter((m) => m.result === "won").length;
+  const lossesCount = matchHistory.filter((m) => m.result === "lost").length;
+  const winRate = totalMatches > 0 ? Math.round((winsCount / totalMatches) * 100) : 0;
+
+  function formatTimeAgo(timestamp: number): string {
+    const diffSec = Math.floor((Date.now() - timestamp) / 1000);
+    if (diffSec < 60) return "just now";
+    const diffMin = Math.floor(diffSec / 60);
+    if (diffMin < 60) return `${diffMin}m ago`;
+    const diffHours = Math.floor(diffMin / 60);
+    if (diffHours < 24) return `${diffHours}h ago`;
+    const diffDays = Math.floor(diffHours / 24);
+    return `${diffDays}d ago`;
+  }
+
   // ==========================================
   // VIEW 1: HOME PAGE (Minimalist Monochrome)
   // ==========================================
   if (view === "home") {
     return (
       <div className="min-h-screen bg-black text-zinc-100 flex flex-col items-center justify-center p-6 selection:bg-zinc-800 selection:text-white">
-        <div className="w-full max-w-md space-y-8">
+        <div className="w-full max-w-md space-y-6">
+          {/* Player Identity Bar */}
+          <div className="flex items-center justify-between p-2.5 bg-zinc-950 border border-zinc-800/80 rounded-xl">
+            <div className="flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+              <span className="text-[11px] font-mono text-zinc-400">Player:</span>
+              <span className="text-xs font-semibold text-white font-mono">{username}</span>
+            </div>
+            <button
+              onClick={handleRerollUsername}
+              title="Get new random username"
+              className="text-[11px] font-mono text-zinc-400 hover:text-white border border-zinc-800 hover:border-zinc-700 bg-zinc-900 px-2 py-0.5 rounded transition"
+            >
+              🎲 Re-roll
+            </button>
+          </div>
+
           {/* Header */}
-          <div className="text-center space-y-3">
+          <div className="text-center space-y-2.5">
             <span className="inline-block text-[11px] font-mono tracking-widest uppercase text-zinc-400 border border-zinc-800 bg-zinc-900/60 px-3 py-1 rounded-full">
               Semantic Ladder
             </span>
@@ -775,6 +1049,36 @@ export default function GamePage() {
               Connect two distant concepts in semantic space. Each bridge step requires ≥ 70% conceptual affinity.
             </p>
           </div>
+
+          {/* Active 1v1 Game Alert if available */}
+          {activeSavedGame && (
+            <div className="p-3.5 bg-zinc-900/90 border border-zinc-700 rounded-xl space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] uppercase font-mono tracking-wider text-emerald-400 flex items-center gap-1.5 font-semibold">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span>
+                  Active 1v1 Match Found
+                </span>
+                <span className="text-xs font-mono text-zinc-400">Room {activeSavedGame.roomCode}</span>
+              </div>
+              <p className="text-xs text-zinc-300 font-mono">
+                Bridge: <span className="text-white font-semibold capitalize">{activeSavedGame.targetPair.source}</span> ➔ <span className="text-white font-semibold capitalize">{activeSavedGame.targetPair.target}</span>
+              </p>
+              <div className="flex gap-2 pt-1">
+                <button
+                  onClick={handleResumeSavedGame}
+                  className="flex-1 py-1.5 bg-white text-black font-semibold rounded-lg text-xs hover:bg-zinc-200 transition-colors"
+                >
+                  Resume Match
+                </button>
+                <button
+                  onClick={handleAbandonSavedGame}
+                  className="px-3 py-1.5 bg-zinc-800 text-zinc-400 hover:text-white rounded-lg text-xs transition-colors border border-zinc-700"
+                >
+                  Abandon
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* Mode Selection Cards */}
           <div className="space-y-3">
@@ -817,11 +1121,22 @@ export default function GamePage() {
 
             {/* 1v1 Fog of War Match */}
             <button
-              onClick={() => setView("lobby")}
+              onClick={() => {
+                setActiveSavedGame(getActiveGameSession());
+                setMatchHistory(getMatchHistory());
+                setView("lobby");
+              }}
               className="w-full p-4 bg-zinc-900 border border-zinc-800 hover:border-zinc-700 hover:bg-zinc-850 text-white transition-colors rounded-xl flex items-center justify-between text-left group"
             >
               <div>
-                <span className="font-semibold text-sm block">1v1 Blind Match</span>
+                <div className="flex items-center gap-2">
+                  <span className="font-semibold text-sm block">1v1 Blind Match</span>
+                  {activeSavedGame && (
+                    <span className="text-[9px] font-mono uppercase bg-emerald-950 text-emerald-300 border border-emerald-800 px-1.5 py-0.2 rounded">
+                      Live
+                    </span>
+                  )}
+                </div>
                 <span className="text-xs text-zinc-400 block mt-0.5">
                   Live race with opponent words hidden until finish
                 </span>
@@ -861,12 +1176,13 @@ export default function GamePage() {
   }
 
   // ==========================================
-  // VIEW 2: PEER LOBBY (Minimalist)
+  // VIEW 2: PEER LOBBY & MATCH HISTORY
   // ==========================================
   if (view === "lobby") {
     return (
-      <div className="min-h-screen bg-black text-zinc-100 flex flex-col items-center justify-center p-6 selection:bg-zinc-800 selection:text-white">
-        <div className="w-full max-w-md bg-zinc-950 border border-zinc-800 rounded-2xl p-6 sm:p-8 space-y-6">
+      <div className="min-h-screen bg-black text-zinc-100 flex flex-col items-center justify-center p-4 sm:p-6 selection:bg-zinc-800 selection:text-white">
+        <div className="w-full max-w-md bg-zinc-950 border border-zinc-800 rounded-2xl p-5 sm:p-7 space-y-5">
+          {/* Header */}
           <div className="flex items-center justify-between pb-3 border-b border-zinc-800/40">
             <div>
               <h2 className="text-base font-semibold text-white">1v1 Blind Match</h2>
@@ -874,106 +1190,348 @@ export default function GamePage() {
             </div>
             <button
               onClick={() => setView("home")}
-              className="text-xs text-zinc-400 hover:text-white transition-colors"
+              className="text-xs text-zinc-400 hover:text-white transition-colors font-mono"
             >
               ← Back
             </button>
           </div>
 
-          {lobbyStatus === "hosting" ? (
-            <div className="space-y-6 text-center">
-              <div
-                onClick={copyRoomCode}
-                role="button"
-                aria-label="Tap to copy room code"
-                className="p-6 bg-zinc-900 border border-zinc-800 rounded-xl space-y-2 cursor-pointer select-none transition hover:border-zinc-700 active:scale-[0.99]"
-              >
-                <span className="text-[10px] uppercase font-mono tracking-widest text-zinc-400 block">
-                  Room Code
-                </span>
-                <span className="text-4xl font-bold text-white font-mono tracking-widest block">
-                  {roomCode}
-                </span>
-                <span className="text-xs text-zinc-400 block pt-1">
-                  {codeCopied ? "Code copied!" : "Tap to copy"}
-                </span>
+          {/* Player Identity Pill */}
+          <div className="flex items-center justify-between p-2.5 bg-zinc-900/60 border border-zinc-800/60 rounded-xl text-xs font-mono">
+            {isEditingUsername ? (
+              <div className="flex items-center gap-2 w-full">
+                <input
+                  type="text"
+                  value={tempUsername}
+                  onChange={(e) => setTempUsername(e.target.value)}
+                  placeholder="New username"
+                  maxLength={16}
+                  autoFocus
+                  className="flex-1 bg-zinc-950 border border-zinc-700 px-2 py-1 rounded text-white text-xs focus:outline-none"
+                />
+                <button
+                  onClick={() => handleSaveCustomUsername(tempUsername)}
+                  className="px-2 py-1 bg-white text-black font-semibold rounded text-xs"
+                >
+                  Save
+                </button>
+                <button
+                  onClick={() => setIsEditingUsername(false)}
+                  className="px-2 py-1 bg-zinc-800 text-zinc-400 rounded text-xs"
+                >
+                  Cancel
+                </button>
               </div>
+            ) : (
+              <>
+                <div className="flex items-center gap-2">
+                  <span className="text-zinc-500">You:</span>
+                  <span className="font-semibold text-zinc-200">{username}</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    onClick={() => {
+                      setTempUsername(username);
+                      setIsEditingUsername(true);
+                    }}
+                    title="Edit username"
+                    className="text-[11px] text-zinc-400 hover:text-white px-1.5 py-0.5 rounded hover:bg-zinc-800 transition"
+                  >
+                    Edit
+                  </button>
+                  <button
+                    onClick={handleRerollUsername}
+                    title="Generate new random username"
+                    className="text-[11px] text-zinc-400 hover:text-white px-1.5 py-0.5 rounded hover:bg-zinc-800 transition"
+                  >
+                    🎲
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
 
-              <button
-                onClick={shareJoinLink}
-                className="w-full py-2.5 bg-zinc-900 hover:bg-zinc-800 text-white font-medium rounded-lg text-sm transition border border-zinc-800"
-              >
-                {copied ? "Link Copied!" : "Share Join Link"}
-              </button>
+          {/* Lobby Navigation Tabs */}
+          <div className="grid grid-cols-2 gap-1 p-1 bg-zinc-900 border border-zinc-800 rounded-xl text-xs font-mono">
+            <button
+              onClick={() => setLobbyTab("lobby")}
+              className={`py-1.5 rounded-lg transition text-center font-medium ${
+                lobbyTab === "lobby"
+                  ? "bg-zinc-800 text-white shadow-sm"
+                  : "text-zinc-400 hover:text-zinc-200"
+              }`}
+            >
+              Match Lobby
+            </button>
+            <button
+              onClick={() => {
+                setMatchHistory(getMatchHistory());
+                setLobbyTab("history");
+              }}
+              className={`py-1.5 rounded-lg transition text-center font-medium ${
+                lobbyTab === "history"
+                  ? "bg-zinc-800 text-white shadow-sm"
+                  : "text-zinc-400 hover:text-zinc-200"
+              }`}
+            >
+              Match History ({matchHistory.length})
+            </button>
+          </div>
 
-              {pendingGuest ? (
-                <div className="p-4 border border-zinc-700 bg-zinc-900 rounded-xl text-left space-y-3">
+          {/* TAB 1: MATCH LOBBY */}
+          {lobbyTab === "lobby" && (
+            <>
+              {/* Active Game Alert */}
+              {activeSavedGame && (
+                <div className="p-3.5 bg-zinc-900 border border-zinc-700/80 rounded-xl space-y-2">
                   <div className="flex items-center justify-between">
-                    <div>
-                      <span className="text-[11px] font-mono uppercase text-zinc-400 block">
-                        Challenger Connected
-                      </span>
-                      <span className="text-sm font-semibold text-white">{pendingGuest.name}</span>
-                    </div>
-                    <span className="w-2 h-2 rounded-full bg-white"></span>
+                    <span className="text-[10px] uppercase font-mono tracking-wider text-emerald-400 flex items-center gap-1.5 font-semibold">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span>
+                      Live Match in Progress
+                    </span>
+                    <span className="text-xs font-mono text-zinc-400">Room {activeSavedGame.roomCode}</span>
+                  </div>
+                  <p className="text-xs text-zinc-300 font-mono">
+                    <span className="capitalize font-semibold text-white">{activeSavedGame.targetPair.source}</span> ➔ <span className="capitalize font-semibold text-white">{activeSavedGame.targetPair.target}</span>
+                  </p>
+                  <div className="flex gap-2 pt-1">
+                    <button
+                      onClick={handleResumeSavedGame}
+                      className="flex-1 py-2 bg-white text-black font-semibold rounded-lg text-xs hover:bg-zinc-200 transition-colors font-mono"
+                    >
+                      Resume Match
+                    </button>
+                    <button
+                      onClick={handleAbandonSavedGame}
+                      className="px-3 py-2 bg-zinc-800 text-zinc-400 hover:text-white rounded-lg text-xs transition-colors border border-zinc-700 font-mono"
+                    >
+                      Abandon
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Notification / Feedback */}
+              {feedback && (
+                <div
+                  className={`p-2.5 rounded-xl text-xs font-mono border flex items-center justify-between gap-3 ${
+                    feedback.type === "error"
+                      ? "bg-rose-950/30 border-rose-900/40 text-rose-400"
+                      : "bg-zinc-900 border-zinc-800 text-zinc-200"
+                  }`}
+                >
+                  <span>{feedback.message}</span>
+                </div>
+              )}
+
+              {lobbyStatus === "hosting" ? (
+                <div className="space-y-5 text-center">
+                  <div
+                    onClick={copyRoomCode}
+                    role="button"
+                    aria-label="Tap to copy room code"
+                    className="p-5 bg-zinc-900 border border-zinc-800 rounded-xl space-y-2 cursor-pointer select-none transition hover:border-zinc-700 active:scale-[0.99]"
+                  >
+                    <span className="text-[10px] uppercase font-mono tracking-widest text-zinc-400 block">
+                      Room Code
+                    </span>
+                    <span className="text-4xl font-bold text-white font-mono tracking-widest block">
+                      {roomCode}
+                    </span>
+                    <span className="text-xs text-zinc-400 block pt-1">
+                      {codeCopied ? "Code copied!" : "Tap to copy"}
+                    </span>
                   </div>
 
                   <button
-                    onClick={handleAcceptGuest}
-                    className="w-full py-3 bg-white text-black font-semibold rounded-lg text-sm hover:bg-zinc-200 transition-colors"
+                    onClick={shareJoinLink}
+                    className="w-full py-2.5 bg-zinc-900 hover:bg-zinc-800 text-white font-medium rounded-lg text-sm transition border border-zinc-800 font-mono"
                   >
-                    Accept & Begin Match
+                    {copied ? "Link Copied!" : "Share Join Link"}
                   </button>
+
+                  {pendingGuest ? (
+                    <div className="p-4 border border-zinc-700 bg-zinc-900 rounded-xl text-left space-y-3">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <span className="text-[10px] font-mono uppercase text-zinc-400 block">
+                            Challenger Request
+                          </span>
+                          <span className="text-sm font-semibold text-white font-mono">{pendingGuest.name}</span>
+                        </div>
+                        <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                      </div>
+
+                      <button
+                        onClick={handleAcceptGuest}
+                        className="w-full py-3 bg-white text-black font-semibold rounded-lg text-sm hover:bg-zinc-200 transition-colors font-mono"
+                      >
+                        Accept & Begin Match
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="p-6 border border-zinc-800/40 rounded-xl space-y-3">
+                      <div className="w-5 h-5 border-2 border-zinc-700 border-t-white rounded-full animate-spin mx-auto"></div>
+                      <p className="text-xs text-zinc-400 font-mono">Waiting for challenger to join...</p>
+                    </div>
+                  )}
+                </div>
+              ) : lobbyStatus === "joining" ? (
+                <div className="space-y-4 text-center py-6">
+                  <div className="w-6 h-6 border-2 border-zinc-700 border-t-white rounded-full animate-spin mx-auto"></div>
+                  <div>
+                    <h3 className="text-sm font-semibold text-white font-mono">Connected to Room {roomCode}</h3>
+                    <p className="text-xs text-zinc-400 mt-1 font-mono">Waiting for host approval...</p>
+                  </div>
                 </div>
               ) : (
-                <div className="p-6 border border-zinc-800/40 rounded-xl space-y-3">
-                  <div className="w-5 h-5 border-2 border-zinc-700 border-t-white rounded-full animate-spin mx-auto"></div>
-                  <p className="text-xs text-zinc-400 font-mono">Waiting for challenger to join...</p>
+                <div className="space-y-4">
+                  <button
+                    onClick={handleHostRoom}
+                    className="w-full py-3.5 px-4 bg-white text-black font-semibold rounded-xl transition text-sm hover:bg-zinc-200 font-mono"
+                  >
+                    Create Room (Host)
+                  </button>
+
+                  <div className="relative flex py-1 items-center">
+                    <div className="flex-grow border-t border-zinc-800/40"></div>
+                    <span className="flex-shrink mx-4 text-zinc-500 text-[10px] uppercase font-mono tracking-widest">
+                      Or Join Existing
+                    </span>
+                    <div className="flex-grow border-t border-zinc-800/40"></div>
+                  </div>
+
+                  <div className="space-y-2.5">
+                    <input
+                      type="text"
+                      placeholder="ROOM CODE"
+                      value={joinCodeInput}
+                      onChange={(e) => setJoinCodeInput(e.target.value.toUpperCase())}
+                      maxLength={6}
+                      className="w-full px-4 py-3 bg-zinc-900 border border-zinc-800 rounded-xl text-center text-white placeholder-zinc-600 uppercase tracking-widest font-mono text-base font-bold focus:outline-none focus:border-zinc-500"
+                    />
+                    <button
+                      onClick={() => handleJoinRoom()}
+                      disabled={!joinCodeInput.trim()}
+                      className="w-full py-3 bg-zinc-900 hover:bg-zinc-800 disabled:opacity-40 text-white font-medium rounded-xl text-sm transition border border-zinc-800 font-mono"
+                    >
+                      Join Match
+                    </button>
+                  </div>
                 </div>
               )}
-            </div>
-          ) : lobbyStatus === "joining" ? (
-            <div className="space-y-4 text-center py-6">
-              <div className="w-6 h-6 border-2 border-zinc-700 border-t-white rounded-full animate-spin mx-auto"></div>
-              <div>
-                <h3 className="text-sm font-semibold text-white">Connected to Room {roomCode}</h3>
-                <p className="text-xs text-zinc-400 mt-1 font-mono">Waiting for host approval...</p>
-              </div>
-            </div>
-          ) : (
-            <div className="space-y-5">
-              <button
-                onClick={handleHostRoom}
-                className="w-full py-3.5 px-4 bg-white text-black font-semibold rounded-xl transition text-sm hover:bg-zinc-200"
-              >
-                Create Room (Host)
-              </button>
+            </>
+          )}
 
-              <div className="relative flex py-1 items-center">
-                <div className="flex-grow border-t border-zinc-800/40"></div>
-                <span className="flex-shrink mx-4 text-zinc-500 text-[10px] uppercase font-mono tracking-widest">
-                  Or Join Existing
-                </span>
-                <div className="flex-grow border-t border-zinc-800/40"></div>
+          {/* TAB 2: MATCH HISTORY */}
+          {lobbyTab === "history" && (
+            <div className="space-y-4">
+              {/* Stats Summary Bar */}
+              <div className="grid grid-cols-4 gap-1.5 p-2 bg-zinc-900/80 border border-zinc-800/60 rounded-xl text-center font-mono">
+                <div className="p-1">
+                  <span className="text-[9px] text-zinc-500 uppercase block">Matches</span>
+                  <span className="text-sm font-bold text-white">{totalMatches}</span>
+                </div>
+                <div className="p-1">
+                  <span className="text-[9px] text-emerald-400 uppercase block">Wins</span>
+                  <span className="text-sm font-bold text-emerald-400">{winsCount}</span>
+                </div>
+                <div className="p-1">
+                  <span className="text-[9px] text-rose-400 uppercase block">Losses</span>
+                  <span className="text-sm font-bold text-rose-400">{lossesCount}</span>
+                </div>
+                <div className="p-1">
+                  <span className="text-[9px] text-zinc-400 uppercase block">Win %</span>
+                  <span className="text-sm font-bold text-white">{winRate}%</span>
+                </div>
               </div>
 
-              <div className="space-y-3">
-                <input
-                  type="text"
-                  placeholder="ROOM CODE"
-                  value={joinCodeInput}
-                  onChange={(e) => setJoinCodeInput(e.target.value.toUpperCase())}
-                  maxLength={6}
-                  className="w-full px-4 py-3 bg-zinc-900 border border-zinc-800 rounded-xl text-center text-white placeholder-zinc-600 uppercase tracking-widest font-mono text-base font-bold focus:outline-none focus:border-zinc-500"
-                />
-                <button
-                  onClick={() => handleJoinRoom()}
-                  disabled={!joinCodeInput.trim()}
-                  className="w-full py-3 bg-zinc-900 hover:bg-zinc-800 disabled:opacity-40 text-white font-medium rounded-xl text-sm transition border border-zinc-800"
-                >
-                  Join Match
-                </button>
-              </div>
+              {/* Match History List */}
+              {matchHistory.length === 0 ? (
+                <div className="p-8 text-center border border-zinc-900 rounded-xl space-y-2">
+                  <span className="text-2xl block">⚔️</span>
+                  <p className="text-xs text-zinc-400 font-mono">No multiplayer matches recorded yet.</p>
+                  <p className="text-[11px] text-zinc-600">Play a 1v1 match to track your match history here.</p>
+                </div>
+              ) : (
+                <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+                  {matchHistory.map((item) => {
+                    const isExpanded = expandedMatchId === item.id;
+                    const isWon = item.result === "won";
+                    return (
+                      <div
+                        key={item.id}
+                        className="bg-zinc-900/50 border border-zinc-800/60 hover:border-zinc-700/80 rounded-xl p-3 space-y-2 text-xs font-mono transition"
+                      >
+                        <div
+                          onClick={() => setExpandedMatchId(isExpanded ? null : item.id)}
+                          className="flex items-center justify-between cursor-pointer select-none"
+                        >
+                          <div className="space-y-0.5">
+                            <div className="flex items-center gap-2">
+                              <span
+                                className={`text-[9px] uppercase px-1.5 py-0.5 rounded font-bold ${
+                                  isWon
+                                    ? "bg-emerald-950 text-emerald-300 border border-emerald-800"
+                                    : "bg-rose-950 text-rose-300 border border-rose-800"
+                                }`}
+                              >
+                                {isWon ? "Victory" : "Defeat"}
+                              </span>
+                              <span className="text-zinc-200 font-medium capitalize">
+                                {item.sourceWord} ➔ {item.targetWord}
+                              </span>
+                            </div>
+                            <div className="text-[10px] text-zinc-500">
+                              vs <span className="text-zinc-400 font-semibold">{item.opponentName}</span> • {item.mySteps} {item.mySteps === 1 ? "step" : "steps"}
+                            </div>
+                          </div>
+
+                          <div className="text-right">
+                            <span className="text-[10px] text-zinc-500 block">
+                              {formatTimeAgo(item.timestamp)}
+                            </span>
+                            <span className="text-zinc-500 text-xs">{isExpanded ? "▲" : "▼"}</span>
+                          </div>
+                        </div>
+
+                        {/* Expanded Paths Drawer */}
+                        {isExpanded && (
+                          <div className="pt-2 border-t border-zinc-800 space-y-1.5 text-[11px]">
+                            <div className="break-words whitespace-normal text-zinc-300">
+                              <span className="text-white font-semibold">You ({item.myUsername}): </span>
+                              {item.myPath.join(" ➔ ")}
+                            </div>
+                            {item.opponentPath && item.opponentPath.length > 0 && (
+                              <div className="break-words whitespace-normal text-zinc-400">
+                                <span className="text-zinc-300 font-semibold">{item.opponentName}: </span>
+                                {item.opponentPath.join(" ➔ ")}
+                              </div>
+                            )}
+                            <div className="text-[9px] text-zinc-600 font-mono pt-0.5">
+                              Room: {item.roomCode}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {matchHistory.length > 0 && (
+                <div className="pt-1 flex justify-end">
+                  <button
+                    onClick={() => {
+                      clearMatchHistory();
+                      setMatchHistory([]);
+                    }}
+                    className="text-[10px] font-mono text-zinc-500 hover:text-rose-400 transition"
+                  >
+                    Clear History
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </div>
