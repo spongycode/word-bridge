@@ -5,6 +5,7 @@ import { WordPair } from "./domains";
 import { calculateGameScore, ScoreBreakdown } from "./lib/scoring";
 import { getAblyRealtime } from "./lib/ably";
 import { fetchWordDefinition } from "./lib/dictionary";
+import { useAuthUser } from "./lib/supabase/useAuthUser";
 import {
   getOrCreateDeviceId,
   getOrCreateUsername,
@@ -25,6 +26,8 @@ import {
 
 export default function GamePage() {
   // Navigation: "home" | "lobby" | "playing"
+  const { user, authLoading, authEnabled, signInWithGoogle, signOut } = useAuthUser();
+  const [authError, setAuthError] = useState(false);
   const [gameType, setGameType] = useState<"solo" | "daily" | "peer">("solo");
   const [view, setView] = useState<"home" | "lobby" | "playing">("home");
 
@@ -138,6 +141,10 @@ export default function GamePage() {
   // Deep-link join: ?join=CODE in the URL auto-starts the room join flow
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
+    if (params.get("auth_error")) {
+      setAuthError(true);
+      window.history.replaceState({}, "", window.location.pathname);
+    }
     const code = params.get("join")?.trim().toUpperCase();
     if (code) setPendingJoinCode(code);
   }, []);
@@ -1036,6 +1043,38 @@ export default function GamePage() {
               🎲 Re-roll
             </button>
           </div>
+
+          {/* Google Sign-in (optional; guest play still works) */}
+          {authEnabled && !authLoading && (
+            <div className="flex items-center justify-between p-2.5 bg-zinc-950 border border-zinc-800/80 rounded-xl">
+              {user ? (
+                <>
+                  <span className="text-[11px] font-mono text-zinc-400 truncate">
+                    Signed in as <span className="text-white">{user.email}</span>
+                  </span>
+                  <button
+                    onClick={signOut}
+                    className="text-[11px] font-mono text-zinc-400 hover:text-white border border-zinc-800 hover:border-zinc-700 bg-zinc-900 px-2 py-0.5 rounded transition shrink-0 ml-2"
+                  >
+                    Sign out
+                  </button>
+                </>
+              ) : (
+                <>
+                  <span className="text-[11px] font-mono text-zinc-400">Playing as guest</span>
+                  <button
+                    onClick={signInWithGoogle}
+                    className="text-[11px] font-mono text-black bg-white hover:bg-zinc-200 px-2.5 py-0.5 rounded font-semibold transition"
+                  >
+                    Sign in with Google
+                  </button>
+                </>
+              )}
+            </div>
+          )}
+          {authError && (
+            <p className="text-[11px] font-mono text-red-400 text-center">Sign-in failed. Please try again.</p>
+          )}
 
           {/* Header */}
           <div className="text-center space-y-2.5">
