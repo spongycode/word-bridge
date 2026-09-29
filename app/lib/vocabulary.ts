@@ -43,16 +43,24 @@ function getSeededRandom(seed: number) {
   return x - Math.floor(x);
 }
 
-// Returns a single synchronized daily pair for all players globally on any given date
-export function getDailyChallengePair(): { source: string; target: string; dateString: string } {
+// Current day as YYYY-MM-DD in UTC so every server and player agrees on "today"
+export function getUtcDayString(date = new Date()): string {
+  return date.toISOString().slice(0, 10);
+}
+
+// Returns a single synchronized daily pair for all players globally on any given UTC date
+// `attempt` lets the caller deterministically re-draw when a pair is too closely related
+export function getDailyChallengePair(
+  dateString = getUtcDayString(),
+  attempt = 0
+): { source: string; target: string; dateString: string } {
   const words = getEnglishVocabulary();
-  const today = new Date();
-  const dateString = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
-  
+  const seedInput = attempt === 0 ? dateString : `${dateString}#${attempt}`;
+
   // Hash the date string into a deterministic integer seed
   let seed = 0;
-  for (let i = 0; i < dateString.length; i++) {
-    seed = (seed << 5) - seed + dateString.charCodeAt(i);
+  for (let i = 0; i < seedInput.length; i++) {
+    seed = (seed << 5) - seed + seedInput.charCodeAt(i);
     seed |= 0;
   }
 

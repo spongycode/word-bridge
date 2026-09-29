@@ -3,33 +3,39 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { WordPair } from "./domains";
 import { calculateGameScore, ScoreBreakdown } from "./lib/scoring";
-import { getAblyRealtime } from "./lib/ably";
+import { connectAbly, closeAblyRealtime, identityOf } from "./lib/ably";
+import { loadMatchHistory, recordMatch, patchOpponentPath, clearAllMatches } from "./lib/matchHistory";
 import { fetchWordDefinition } from "./lib/dictionary";
 import { useAuthUser } from "./lib/supabase/useAuthUser";
+import type { User } from "@supabase/supabase-js";
 import {
-  getOrCreateDeviceId,
-  getOrCreateUsername,
-  saveUsername,
-  generateRandomUsername,
+  getOrCreateGuestName,
+  saveGuestName,
   saveActiveGameSession,
   getActiveGameSession,
   clearActiveGameSession,
-  saveMatchResult,
-  getMatchHistory,
-  clearMatchHistory,
   MatchHistoryItem,
   ActiveGameSession,
   OpponentState,
-  OpponentStep,
   StepRecord,
 } from "./lib/player";
+import { useProfile } from "./lib/supabase/profile";
+import type { DailyRunState } from "./lib/dailyRun";
+import PlayerIdentity from "./components/PlayerIdentity";
+import DailyLeaderboard from "./components/DailyLeaderboard";
+
+const STEP_THRESHOLD = 70;
 
 export default function GamePage() {
   // Navigation: "home" | "lobby" | "playing"
   const { user, authLoading, authEnabled, signInWithGoogle, signOut } = useAuthUser();
+  const { profile, updateUsername } = useProfile(user);
   const [authError, setAuthError] = useState(false);
   const [gameType, setGameType] = useState<"solo" | "daily" | "peer">("solo");
-  const [view, setView] = useState<"home" | "lobby" | "playing">("home");
+  const [view, setView] = useState<"home" | "lobby" | "playing" | "leaderboard">("home");
+  // Ranked daily = signed-in run validated and stored by the server (one attempt per day)
+  const [dailyRanked, setDailyRanked] = useState(false);
+  const [pairError, setPairError] = useState<string | null>(null);
 
   // Game state
   const [targetPair, setTargetPair] = useState<WordPair | null>(null);
@@ -46,22 +52,20 @@ export default function GamePage() {
   const [proximityDelta, setProximityDelta] = useState<"hotter" | "colder" | null>(null);
 
   // Feature 2: Fog of War Peer Multiplayer
-  const [deviceId, setDeviceId] = useState<string>("");
-  const [username, setUsername] = useState<string>("Player");
-  const [isEditingUsername, setIsEditingUsername] = useState(false);
-  const [tempUsername, setTempUsername] = useState("");
+  const [guestName, setGuestName] = useState<string>("Guest");
+  // Signed-in players always use their unique profile username
+  const username = profile?.username ?? guestName;
   const [activeSavedGame, setActiveSavedGame] = useState<ActiveGameSession | null>(null);
   const [matchHistory, setMatchHistory] = useState<MatchHistoryItem[]>([]);
   const [lobbyTab, setLobbyTab] = useState<"lobby" | "history">("lobby");
   const [expandedMatchId, setExpandedMatchId] = useState<string | null>(null);
 
-  const [myClientId, setMyClientId] = useState<string>("");
   const [roomCode, setRoomCode] = useState<string>("");
   const [joinCodeInput, setJoinCodeInput] = useState<string>("");
   const [pendingJoinCode, setPendingJoinCode] = useState<string | null>(null);
   const [isHost, setIsHost] = useState(false);
   const [lobbyStatus, setLobbyStatus] = useState<string>("idle");
-  const [pendingGuest, setPendingGuest] = useState<{ clientId: string; deviceId?: string; name: string } | null>(null);
+  const [pendingGuest, setPendingGuest] = useState<{ clientId: string; name: string } | null>(null);
   const [opponent, setOpponent] = useState<OpponentState | null>(null);
 
   const [feedback, setFeedback] = useState<{
@@ -73,6 +77,8 @@ export default function GamePage() {
 
   const [hasWon, setHasWon] = useState(false);
   const [opponentWon, setOpponentWon] = useState(false);
+  // Who reached the target first in a 1v1 round (decided by channel message order)
+  const [raceWinner, setRaceWinner] = useState<"me" | "opponent" | null>(null);
   const [finalScore, setFinalScore] = useState<ScoreBreakdown | null>(null);
 
   // Feature 2b: Peer Rematch
@@ -89,6 +95,21 @@ export default function GamePage() {
   const rematchStartedRef = useRef(false);
   // Mirrors history so channel subscribers can read the latest path at game over
   const historyRef = useRef<StepRecord[]>([]);
+  const usernameRef = useRef("Guest");
+  const targetPairRef = useRef<WordPair | null>(null);
+  const opponentRef = useRef<OpponentState | null>(null);
+  const roomCodeRef = useRef("");
+  const raceWinnerRef = useRef<"me" | "opponent" | null>(null);
+  const roundRef = useRef(0);
+  const roundSavedRef = useRef<string | null>(null);
+  const joinTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Server-verified realtime identity for this tab ("<identity>.<tab>"), set once connected
+  const myIdRef = useRef("");
+  // Random per-room id so match history keys never collide when room codes are reused
+  const matchIdRef = useRef("");
+  const hasWonRef = useRef(false);
+  const opponentWonRef = useRef(false);
+  const userRef = useRef<User | null>(null);
 
   // Word definition tooltip/card state
   const [activeDefinition, setActiveDefinition] = useState<{
@@ -99,15 +120,10 @@ export default function GamePage() {
   } | null>(null);
 
   useEffect(() => {
-    const devId = getOrCreateDeviceId();
-    const uname = getOrCreateUsername();
-    setDeviceId(devId);
-    setUsername(uname);
-    setMyClientId(`${devId}_tab_${Math.random().toString(36).substring(2, 6)}`);
+    setGuestName(getOrCreateGuestName());
 
-    // Check for active saved session & match history
+    // Check for an active saved session (match history loads once auth resolves)
     setActiveSavedGame(getActiveGameSession());
-    setMatchHistory(getMatchHistory());
 
     const handleScrollLock = () => {
       if (window.scrollY !== 0) {
@@ -150,13 +166,13 @@ export default function GamePage() {
   }, []);
 
   useEffect(() => {
-    if (!pendingJoinCode || !myClientId) return;
+    if (!pendingJoinCode || authLoading) return;
     window.history.replaceState({}, "", window.location.pathname);
     setJoinCodeInput(pendingJoinCode);
     setPendingJoinCode(null);
     handleJoinRoom(pendingJoinCode);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pendingJoinCode, myClientId]);
+  }, [pendingJoinCode, authLoading]);
 
   const handleToggleDefinition = async (word: string) => {
     const clean = word.trim().toLowerCase();
@@ -208,12 +224,46 @@ export default function GamePage() {
     }
   };
 
+  const startHistory = (pair: WordPair) => {
+    const initial: StepRecord[] = [{ word: pair.source, relatednessToPrevious: 100, scoreVal: 3.0 }];
+    setHistory(initial);
+    historyRef.current = initial;
+  };
+
+  // Rebuilds local game state from the server-stored ranked daily run
+  const applyDailyRun = (run: DailyRunState, pair: WordPair) => {
+    const steps: StepRecord[] = run.path.map((word, i) => ({
+      word,
+      relatednessToPrevious: i === 0 ? 100 : run.stepScores[i - 1],
+      scoreVal: 0,
+    }));
+    setHistory(steps);
+    historyRef.current = steps;
+    setFailedAttempts(run.failedAttempts);
+    if (run.finished) {
+      setHasWon(true);
+      setFinalScore(
+        calculateGameScore({
+          baselineScore: pair.baselineScore ?? 15,
+          stepCount: steps.length - 1,
+          stepSimilarities: run.stepScores,
+          failedAttempts: run.failedAttempts,
+        })
+      );
+    }
+  };
+
   // Start Solo / Daily Game
   const initGame = async (type: "solo" | "daily") => {
+    leaveChannel();
     setActiveDefinition(null);
     setGameType(type);
     setView("playing");
     setLoadingPair(true);
+    setPairError(null);
+    setTargetPair(null);
+    targetPairRef.current = null;
+    setHistory([]);
     setFeedback(null);
     setHasWon(false);
     setOpponentWon(false);
@@ -222,129 +272,373 @@ export default function GamePage() {
     setNextWord("");
     setCopied(false);
     setOpponent(null);
+    opponentRef.current = null;
     setProximityDelta(null);
+    setDailyRanked(false);
+    resetRace();
 
     try {
-      const url = type === "daily" ? "/api/pair?daily=true" : "/api/pair";
-      const res = await fetch(url);
-      const pair: WordPair = await res.json();
-      setTargetPair(pair);
-      setTargetProximity(pair.baselineScore ?? 15);
-      setHistory([
-        {
-          word: pair.source,
-          relatednessToPrevious: 100,
-          scoreVal: 3.0,
-        },
-      ]);
+      if (type === "daily") {
+        const res = await fetch("/api/daily");
+        if (!res.ok) throw new Error("Failed to load the daily challenge");
+        const { puzzle, run, ranked }: { puzzle: WordPair; run: DailyRunState | null; ranked: boolean } = await res.json();
+        targetPairRef.current = puzzle;
+        setTargetPair(puzzle);
+        setDailyRanked(ranked);
+        if (ranked && run) {
+          applyDailyRun(run, puzzle);
+          setTargetProximity(run.lastProximity);
+        } else {
+          startHistory(puzzle);
+          setTargetProximity(puzzle.baselineScore ?? 15);
+        }
+      } else {
+        const res = await fetch("/api/pair");
+        if (!res.ok) throw new Error("Failed to generate a word pair");
+        const pair: WordPair = await res.json();
+        targetPairRef.current = pair;
+        setTargetPair(pair);
+        startHistory(pair);
+        setTargetProximity(pair.baselineScore ?? 15);
+      }
     } catch (err) {
       console.error("Failed to load pair:", err);
+      setPairError("Could not load a puzzle. Check your connection and try again.");
     } finally {
       setLoadingPair(false);
       setTimeout(() => inputRef.current?.focus(), 150);
     }
   };
 
-  const handleRerollUsername = () => {
-    const newName = generateRandomUsername();
-    saveUsername(newName);
-    setUsername(newName);
+  const handleSaveUsername = async (name: string): Promise<string | null> => {
+    if (user) return updateUsername(name);
+    const err = saveGuestName(name);
+    if (!err) setGuestName(name.trim());
+    return err;
   };
 
-  const handleSaveCustomUsername = (name: string) => {
-    const saved = saveUsername(name);
-    setUsername(saved);
-    setIsEditingUsername(false);
+  // Keep refs in sync so Ably subscribers never read stale React state
+  useEffect(() => {
+    usernameRef.current = username;
+  }, [username]);
+  useEffect(() => {
+    targetPairRef.current = targetPair;
+  }, [targetPair]);
+  useEffect(() => {
+    opponentRef.current = opponent;
+  }, [opponent]);
+  useEffect(() => {
+    roomCodeRef.current = roomCode;
+  }, [roomCode]);
+  useEffect(() => {
+    hasWonRef.current = hasWon;
+  }, [hasWon]);
+  useEffect(() => {
+    opponentWonRef.current = opponentWon;
+  }, [opponentWon]);
+  useEffect(() => {
+    userRef.current = user;
+  }, [user]);
+
+  // A new identity (sign in / sign out) needs a fresh realtime token
+  const lastIdentityRef = useRef<string | null | undefined>(undefined);
+  useEffect(() => {
+    if (authLoading) return;
+    const identity = user?.id ?? null;
+    if (lastIdentityRef.current !== undefined && lastIdentityRef.current !== identity) closeAblyRealtime();
+    lastIdentityRef.current = identity;
+  }, [user, authLoading]);
+
+  // History comes from Supabase for signed-in players, localStorage for guests
+  const refreshMatchHistory = useCallback(async () => {
+    setMatchHistory(await loadMatchHistory(userRef.current));
+  }, []);
+  useEffect(() => {
+    if (!authLoading) refreshMatchHistory();
+  }, [user, authLoading, refreshMatchHistory]);
+
+  const matchKey = () => `${matchIdRef.current}#${roundRef.current}`;
+
+  // Opponent messages are matched by identity so a reloaded tab (new clientId suffix) is still recognized
+  const isOpponent = (clientId: string | undefined) => {
+    const opp = opponentRef.current;
+    return Boolean(opp && clientId && clientId !== myIdRef.current && identityOf(clientId) === identityOf(opp.clientId));
   };
 
-  const handleResumeSavedGame = () => {
-    const session = activeSavedGame || getActiveGameSession();
-    if (!session) return;
-    setActiveDefinition(null);
-    setRoomCode(session.roomCode);
-    setIsHost(session.isHost);
-    isHostRef.current = session.isHost;
-    setTargetPair(session.targetPair);
-    setTargetProximity(session.targetPair.baselineScore ?? 15);
-    setHistory(session.history);
-    historyRef.current = session.history;
-    setOpponent(session.opponent);
-    setHasWon(session.hasWon);
-    setOpponentWon(session.opponentWon);
-    setGameType("peer");
-    setView("playing");
+  const resetRace = () => {
+    raceWinnerRef.current = null;
+    setRaceWinner(null);
+  };
 
-    const ably = getAblyRealtime(myClientId);
-    const channel = ably.channels.get(`game:room_${session.roomCode}`);
-    ablyChannelRef.current = channel;
+  const ensureRealtime = async (): Promise<string> => {
+    const { clientId } = await connectAbly();
+    myIdRef.current = clientId;
+    return clientId;
+  };
 
+  // Unsubscribe and detach from the current room so old rooms can't leak events into new screens
+  const leaveChannel = () => {
+    if (joinTimeoutRef.current) {
+      clearTimeout(joinTimeoutRef.current);
+      joinTimeoutRef.current = null;
+    }
+    const channel = ablyChannelRef.current;
+    if (channel) {
+      try {
+        channel.unsubscribe();
+        channel.detach().catch(() => {});
+      } catch {}
+    }
+    ablyChannelRef.current = null;
+  };
+
+  // Snapshot the in-progress round so a refresh/crash can resume it
+  const persistSession = (overrides: Partial<ActiveGameSession> = {}) => {
+    const pair = targetPairRef.current;
+    if (!pair || raceWinnerRef.current) return;
+    saveActiveGameSession({
+      roomCode: roomCodeRef.current,
+      isHost: isHostRef.current,
+      targetPair: pair,
+      history: historyRef.current,
+      hasWon: hasWonRef.current,
+      opponentWon: opponentWonRef.current,
+      opponent: opponentRef.current,
+      matchId: matchIdRef.current,
+      round: roundRef.current,
+      updatedAt: Date.now(),
+      ...overrides,
+    });
+  };
+
+  // Saves exactly one history record per match round
+  const recordPeerResult = (result: "won" | "lost", opponentPath?: string[]) => {
+    const pair = targetPairRef.current;
+    const key = matchKey();
+    if (!pair || roundSavedRef.current === key) return;
+    roundSavedRef.current = key;
+    const opp = opponentRef.current;
+    const oppPath = opponentPath ?? opp?.finalHistory;
+    clearActiveGameSession();
+    setActiveSavedGame(null);
+    recordMatch(userRef.current, {
+      matchKey: key,
+      roomCode: roomCodeRef.current,
+      sourceWord: pair.source,
+      targetWord: pair.target,
+      myUsername: usernameRef.current,
+      mySteps: Math.max(0, historyRef.current.length - 1),
+      myPath: historyRef.current.map((s) => s.word),
+      opponentName: opp?.name || "Opponent",
+      opponentSteps: oppPath ? oppPath.length - 1 : undefined,
+      opponentPath: oppPath,
+      result,
+    }).then(refreshMatchHistory);
+  };
+
+  const revealMyPath = () => {
+    // Loser shares their (possibly incomplete) word list with the winner at game over
+    ablyChannelRef.current?.publish("reveal_path", {
+      round: roundRef.current,
+      finalHistory: historyRef.current.map((s) => s.word),
+    });
+  };
+
+  // Settles the round once, identically on both clients
+  const settleRace = (winner: "me" | "opponent", opponentPath?: string[]) => {
+    if (raceWinnerRef.current) return;
+    raceWinnerRef.current = winner;
+    setRaceWinner(winner);
+    if (winner === "me") {
+      recordPeerResult("won");
+    } else {
+      opponentWonRef.current = true;
+      setOpponentWon(true);
+      revealMyPath();
+      recordPeerResult("lost", opponentPath);
+    }
+  };
+
+  const updateOpponent = (patch: Partial<OpponentState>) => {
+    const opp = opponentRef.current;
+    if (!opp) return;
+    const updated = { ...opp, ...patch };
+    opponentRef.current = updated;
+    setOpponent(updated);
+  };
+
+  // Single set of in-game handlers shared by host, guest, and resumed sessions.
+  // msg.clientId is stamped by Ably from the server-issued token, so it can't be spoofed.
+  const subscribeGameEvents = (channel: any) => {
     channel.subscribe("peer_step", (msg: any) => {
-      if (msg.data.clientId !== myClientId) {
-        setOpponent((prev) => {
-          const currentSteps = prev?.steps ?? [];
-          return {
-            clientId: msg.data.clientId,
-            name: msg.data.name || prev?.name || "Opponent",
-            steps: [
-              ...currentSteps,
-              {
-                step: msg.data.step,
-                relatedness: msg.data.relatedness,
-                word: msg.data.isGameOver ? msg.data.word : undefined,
-              },
-            ],
-            hasWon: msg.data.hasWon,
-            finalHistory: msg.data.finalHistory ?? prev?.finalHistory,
-          };
-        });
+      const d = msg.data;
+      if (d.round !== roundRef.current) return; // stale message from a previous round
+      const isMine = msg.clientId === myIdRef.current;
+      if (!isMine && !isOpponent(msg.clientId)) return; // ignore anyone who isn't in this match
 
-        if (msg.data.hasWon) {
+      if (!isMine) {
+        const opp = opponentRef.current!;
+        updateOpponent({
+          clientId: msg.clientId,
+          name: d.name || opp.name,
+          steps: [...opp.steps, { step: d.step, relatedness: d.relatedness }],
+          hasWon: d.hasWon,
+          finalHistory: d.finalHistory ?? opp.finalHistory,
+        });
+        if (d.hasWon) {
+          opponentWonRef.current = true;
           setOpponentWon(true);
-          revealMyPath();
-          if (session.targetPair) {
-            saveMatchResult({
-              roomCode: session.roomCode,
-              sourceWord: session.targetPair.source,
-              targetWord: session.targetPair.target,
-              myUsername: username,
-              mySteps: Math.max(0, historyRef.current.length - 1),
-              myPath: historyRef.current.map((s) => s.word),
-              opponentName: session.opponent?.name || msg.data.name || "Opponent",
-              opponentSteps: msg.data.finalHistory ? msg.data.finalHistory.length - 1 : undefined,
-              opponentPath: msg.data.finalHistory,
-              result: "lost",
-            });
-            setMatchHistory(getMatchHistory());
-            clearActiveGameSession();
-            setActiveSavedGame(null);
-          }
         }
+        persistSession();
       }
+
+      // Ably delivers channel messages in the same order to everyone (including our own echo),
+      // so the first win message seen decides the race identically on both clients.
+      if (d.hasWon) settleRace(isMine ? "me" : "opponent", isMine ? undefined : d.finalHistory);
     });
 
+    channel.subscribe("reveal_path", (msg: any) => {
+      const d = msg.data;
+      if (d.round !== roundRef.current || !isOpponent(msg.clientId)) return;
+      updateOpponent({ finalHistory: d.finalHistory });
+      patchOpponentPath(userRef.current, matchKey(), d.finalHistory).then(refreshMatchHistory);
+    });
+
+    // Reconnect recovery: a returning player asks for the opponent's current round state
+    channel.subscribe("state_request", (msg: any) => {
+      if (msg.data.round !== roundRef.current || !isOpponent(msg.clientId)) return;
+      updateOpponent({ clientId: msg.clientId });
+      const opp = opponentRef.current;
+      const winner = raceWinnerRef.current;
+      channel.publish("state_sync", {
+        round: roundRef.current,
+        name: usernameRef.current,
+        steps: historyRef.current.slice(1).map((s, i) => ({ step: i + 1, relatedness: s.relatednessToPrevious })),
+        hasWon: hasWonRef.current,
+        finalHistory: winner || hasWonRef.current ? historyRef.current.map((s) => s.word) : undefined,
+        raceWinnerId: winner === "me" ? myIdRef.current : winner === "opponent" ? opp?.clientId : null,
+      });
+    });
+
+    channel.subscribe("state_sync", (msg: any) => {
+      const d = msg.data;
+      if (d.round !== roundRef.current || !isOpponent(msg.clientId)) return;
+      updateOpponent({
+        clientId: msg.clientId,
+        name: d.name || opponentRef.current?.name,
+        steps: d.steps,
+        hasWon: d.hasWon,
+        finalHistory: d.finalHistory ?? opponentRef.current?.finalHistory,
+      });
+      if (d.hasWon) {
+        opponentWonRef.current = true;
+        setOpponentWon(true);
+      }
+      if (d.raceWinnerId) {
+        settleRace(identityOf(d.raceWinnerId) === identityOf(myIdRef.current) ? "me" : "opponent", d.finalHistory);
+      }
+      persistSession();
+    });
+
+    // Peer rematch handshake (identical on host + challenger side)
     channel.subscribe("rematch_request", (msg: any) => {
-      if (msg.data.clientId === myClientId) return;
+      if (!isOpponent(msg.clientId)) return;
       rematchOpponentRef.current = true;
       maybeStartRematch();
     });
 
     channel.subscribe("rematch_cancel", (msg: any) => {
-      if (msg.data.clientId === myClientId) return;
+      if (!isOpponent(msg.clientId)) return;
       rematchOpponentRef.current = false;
     });
 
     channel.subscribe("rematch_start", (msg: any) => {
-      if (isHostRef.current || msg.data.clientId === myClientId) return;
-      startRematchRound(msg.data.targetPair as WordPair);
+      // Only the host (our opponent, from the challenger's side) may start a new round
+      if (isHostRef.current || !isOpponent(msg.clientId)) return;
+      startRematchRound(msg.data.targetPair as WordPair, msg.data.round);
     });
+  };
 
-    channel.subscribe("reveal_path", (msg: any) => {
-      if (msg.data.clientId === myClientId) return;
-      setOpponent((prev) => ({
-        ...(prev ?? { clientId: msg.data.clientId, name: "Opponent", steps: [], hasWon: false }),
-        finalHistory: msg.data.finalHistory,
-      }));
-    });
+  // Common state reset when a 1v1 round begins
+  const beginPeerRound = (pair: WordPair, opp: OpponentState) => {
+    setActiveDefinition(null);
+    targetPairRef.current = pair;
+    setTargetPair(pair);
+    setTargetProximity(pair.baselineScore ?? 15);
+    opponentRef.current = opp;
+    setOpponent(opp);
+    const initialHistory: StepRecord[] = [{ word: pair.source, relatednessToPrevious: 100, scoreVal: 3.0 }];
+    setHistory(initialHistory);
+    historyRef.current = initialHistory;
+    setNextWord("");
+    setFeedback(null);
+    hasWonRef.current = false;
+    setHasWon(false);
+    opponentWonRef.current = false;
+    setOpponentWon(false);
+    setFinalScore(null);
+    setFailedAttempts(0);
+    setCopied(false);
+    setProximityDelta(null);
+    resetRace();
+
+    persistSession({ history: initialHistory, hasWon: false, opponentWon: false, opponent: opp });
+    setActiveSavedGame(getActiveGameSession());
+
+    setGameType("peer");
+    setView("playing");
+    setTimeout(() => inputRef.current?.focus(), 150);
+  };
+
+  const handleResumeSavedGame = async () => {
+    const session = activeSavedGame || getActiveGameSession();
+    if (!session) return;
+    leaveChannel();
+    setActiveDefinition(null);
+    setRoomCode(session.roomCode);
+    roomCodeRef.current = session.roomCode;
+    matchIdRef.current = session.matchId;
+    roundRef.current = session.round;
+    setIsHost(session.isHost);
+    isHostRef.current = session.isHost;
+    targetPairRef.current = session.targetPair;
+    setTargetPair(session.targetPair);
+    setTargetProximity(session.targetPair.baselineScore ?? 15);
+    setHistory(session.history);
+    historyRef.current = session.history;
+    opponentRef.current = session.opponent;
+    setOpponent(session.opponent);
+    hasWonRef.current = session.hasWon;
+    setHasWon(session.hasWon);
+    opponentWonRef.current = session.opponentWon;
+    setOpponentWon(session.opponentWon);
+    setFeedback(null);
+    resetRace();
+    setGameType("peer");
+    setView("playing");
+
+    try {
+      const { ably } = await connectAbly();
+      myIdRef.current = ably.auth.clientId;
+      const channel = ably.channels.get(`game:room_${session.roomCode}`);
+      ablyChannelRef.current = channel;
+      subscribeGameEvents(channel);
+      // Ask the opponent what happened while we were away
+      channel.publish("state_request", { round: roundRef.current });
+    } catch (err: any) {
+      setFeedback({ type: "error", message: err?.message || "Could not reconnect to the match." });
+    }
+
+    // Fallback when the opponent is offline: a signed-in winner's stored result settles the round
+    fetch(`/api/matches/outcome?key=${encodeURIComponent(matchKey())}`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data?.winner && !raceWinnerRef.current) {
+          updateOpponent({ hasWon: true, finalHistory: data.winner.path });
+          settleRace("opponent", data.winner.path);
+        }
+      })
+      .catch(() => {});
 
     setTimeout(() => inputRef.current?.focus(), 150);
   };
@@ -356,328 +650,160 @@ export default function GamePage() {
 
   // Peer Multiplayer Setup
   const handleHostRoom = async () => {
+    leaveChannel();
     const code = Math.random().toString(36).substring(2, 6).toUpperCase();
     setRoomCode(code);
+    roomCodeRef.current = code;
+    matchIdRef.current = crypto.randomUUID();
+    roundRef.current = 0;
     setIsHost(true);
     isHostRef.current = true;
     setLobbyStatus("hosting");
     setView("lobby");
     setPendingGuest(null);
+    setFeedback(null);
+    opponentRef.current = null;
+    setOpponent(null);
+    targetPairRef.current = null;
+    setTargetPair(null);
 
-    const res = await fetch("/api/pair");
-    const pair: WordPair = await res.json();
-    setTargetPair(pair);
-    setTargetProximity(pair.baselineScore ?? 15);
+    let myId: string;
+    try {
+      myId = await ensureRealtime();
+    } catch (err: any) {
+      setLobbyStatus("idle");
+      setFeedback({ type: "error", message: err?.message || "Could not connect to multiplayer." });
+      return;
+    }
 
-    const ably = getAblyRealtime(myClientId);
+    const { ably } = await connectAbly();
     const channel = ably.channels.get(`game:room_${code}`);
     ablyChannelRef.current = channel;
 
     channel.subscribe("join_request", (msg: any) => {
-      if (msg.data.clientId === myClientId) return;
+      const guestId: string | undefined = msg.clientId;
+      if (!guestId || guestId === myId) return;
+      const reject = (reason: string) => channel.publish("join_rejected", { targetClientId: guestId, reason });
 
-      // Prevent self-joining from same device / browser
-      if (msg.data.deviceId && msg.data.deviceId === deviceId) {
-        channel.publish("join_rejected", {
-          targetClientId: msg.data.clientId,
-          reason: "Cannot join your own room from the same device.",
-        });
-        return;
-      }
+      // Same person (another tab, or the same account on another device) can't play themselves
+      if (identityOf(guestId) === identityOf(myId)) return reject("You can't join your own room.");
+      // Room is locked once a match has started
+      if (opponentRef.current) return reject("This room is already in a match.");
 
-      setPendingGuest({
-        clientId: msg.data.clientId,
-        deviceId: msg.data.deviceId,
-        name: msg.data.name || "Challenger",
-      });
+      setPendingGuest({ clientId: guestId, name: msg.data.name || "Challenger" });
     });
 
-    channel.subscribe("peer_step", (msg: any) => {
-      if (msg.data.clientId !== myClientId) {
-        setOpponent((prev) => {
-          const currentSteps = prev?.steps ?? [];
-          return {
-            clientId: msg.data.clientId,
-            name: msg.data.name || "Opponent",
-            steps: [
-              ...currentSteps,
-              {
-                step: msg.data.step,
-                relatedness: msg.data.relatedness,
-                word: msg.data.isGameOver ? msg.data.word : undefined,
-              },
-            ],
-            hasWon: msg.data.hasWon,
-            finalHistory: msg.data.finalHistory ?? prev?.finalHistory,
-          };
-        });
+    subscribeGameEvents(channel);
 
-        if (msg.data.hasWon) {
-          setOpponentWon(true);
-          revealMyPath();
-          if (pair) {
-            saveMatchResult({
-              roomCode: code,
-              sourceWord: pair.source,
-              targetWord: pair.target,
-              myUsername: username,
-              mySteps: Math.max(0, historyRef.current.length - 1),
-              myPath: historyRef.current.map((s) => s.word),
-              opponentName: pendingGuest?.name || msg.data.name || "Opponent",
-              opponentSteps: msg.data.finalHistory ? msg.data.finalHistory.length - 1 : undefined,
-              opponentPath: msg.data.finalHistory,
-              result: "lost",
-            });
-            setMatchHistory(getMatchHistory());
-            clearActiveGameSession();
-            setActiveSavedGame(null);
-          }
-        }
-      }
-    });
-
-    // Feature 2b: Peer rematch handshake (identical on host + challenger side)
-    channel.subscribe("rematch_request", (msg: any) => {
-      if (msg.data.clientId === myClientId) return;
-      rematchOpponentRef.current = true;
-      maybeStartRematch();
-    });
-
-    channel.subscribe("rematch_cancel", (msg: any) => {
-      if (msg.data.clientId === myClientId) return;
-      rematchOpponentRef.current = false;
-    });
-
-    channel.subscribe("rematch_start", (msg: any) => {
-      if (isHostRef.current || msg.data.clientId === myClientId) return;
-      startRematchRound(msg.data.targetPair as WordPair);
-    });
-
-    // Feature 2: Symmetric path reveal at game over (loser shares their list with the winner)
-    channel.subscribe("reveal_path", (msg: any) => {
-      if (msg.data.clientId === myClientId) return;
-      setOpponent((prev) => ({
-        ...(prev ?? { clientId: msg.data.clientId, name: "Opponent", steps: [], hasWon: false }),
-        finalHistory: msg.data.finalHistory,
-      }));
-    });
+    try {
+      const res = await fetch("/api/pair");
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || "Failed to generate a word pair");
+      targetPairRef.current = body;
+      setTargetPair(body);
+    } catch (err: any) {
+      console.error(err);
+      setFeedback({ type: "error", message: err?.message || "Could not generate a word pair. Go back and try again." });
+    }
   };
 
   const handleAcceptGuest = () => {
-    if (!pendingGuest || !ablyChannelRef.current || !targetPair) return;
-    setActiveDefinition(null);
+    const pair = targetPairRef.current;
+    if (!pendingGuest || !ablyChannelRef.current || !pair) return;
 
     ablyChannelRef.current.publish("join_accepted", {
-      targetPair,
-      hostId: myClientId,
+      targetPair: pair,
       hostName: username,
       guestId: pendingGuest.clientId,
+      matchId: matchIdRef.current,
     });
 
-    const initOpponent: OpponentState = {
+    const opp: OpponentState = {
       clientId: pendingGuest.clientId,
       name: pendingGuest.name,
-      steps: [{ step: 1, relatedness: 100 }],
+      steps: [],
       hasWon: false,
     };
-    setOpponent(initOpponent);
-
-    const initialHistory = [
-      {
-        word: targetPair.source,
-        relatednessToPrevious: 100,
-        scoreVal: 3.0,
-      },
-    ];
-    setHistory(initialHistory);
-    historyRef.current = initialHistory;
-
-    // Save active session
-    saveActiveGameSession({
-      roomCode,
-      isHost: true,
-      targetPair,
-      history: initialHistory,
-      hasWon: false,
-      opponentWon: false,
-      opponent: initOpponent,
-      updatedAt: Date.now(),
-    });
-    setActiveSavedGame(getActiveGameSession());
-
-    setGameType("peer");
-    setView("playing");
-    setTimeout(() => inputRef.current?.focus(), 150);
+    setPendingGuest(null);
+    beginPeerRound(pair, opp);
   };
 
-  const handleJoinRoom = (codeArg?: string) => {
+  const handleJoinRoom = async (codeArg?: string) => {
     const code = (codeArg ?? joinCodeInput).trim().toUpperCase();
     if (!code) return;
 
+    leaveChannel();
     setRoomCode(code);
+    roomCodeRef.current = code;
+    roundRef.current = 0;
     setIsHost(false);
     isHostRef.current = false;
     setLobbyStatus("joining");
     setView("lobby");
+    setFeedback(null);
+    opponentRef.current = null;
+    setOpponent(null);
 
-    const ably = getAblyRealtime(myClientId);
+    const failJoin = (message: string) => {
+      leaveChannel();
+      setLobbyStatus("idle");
+      setFeedback({ type: "error", message });
+    };
+
+    let myId: string;
+    try {
+      myId = await ensureRealtime();
+    } catch (err: any) {
+      failJoin(err?.message || "Could not connect to multiplayer.");
+      return;
+    }
+
+    const { ably } = await connectAbly();
     const channel = ably.channels.get(`game:room_${code}`);
     ablyChannelRef.current = channel;
 
-    channel.publish("join_request", {
-      clientId: myClientId,
-      deviceId,
-      name: username,
-    });
-
     channel.subscribe("join_rejected", (msg: any) => {
-      if (msg.data.targetClientId === myClientId) {
-        setLobbyStatus("idle");
-        setFeedback({
-          type: "error",
-          message: msg.data.reason || "Failed to join room.",
-        });
-      }
+      if (msg.data.targetClientId === myId && msg.clientId !== myId) failJoin(msg.data.reason || "Failed to join room.");
     });
 
     channel.subscribe("join_accepted", (msg: any) => {
-      if (msg.data.guestId && msg.data.guestId !== myClientId) return;
-      setActiveDefinition(null);
-      const pair: WordPair = msg.data.targetPair;
-      setTargetPair(pair);
-      setTargetProximity(pair.baselineScore ?? 15);
-      const initOpponent: OpponentState = {
-        clientId: msg.data.hostId,
-        name: msg.data.hostName || "Host Player",
-        steps: [{ step: 1, relatedness: 100 }],
+      if (msg.data.guestId !== myId || !msg.clientId || msg.clientId === myId) return;
+      if (joinTimeoutRef.current) {
+        clearTimeout(joinTimeoutRef.current);
+        joinTimeoutRef.current = null;
+      }
+      matchIdRef.current = msg.data.matchId;
+      const opp: OpponentState = {
+        clientId: msg.clientId, // host identity verified by Ably
+        name: msg.data.hostName || "Host",
+        steps: [],
         hasWon: false,
       };
-      setOpponent(initOpponent);
-
-      const initialHistory = [
-        {
-          word: pair.source,
-          relatednessToPrevious: 100,
-          scoreVal: 3.0,
-        },
-      ];
-      setHistory(initialHistory);
-      historyRef.current = initialHistory;
-
-      // Save active session
-      saveActiveGameSession({
-        roomCode: code,
-        isHost: false,
-        targetPair: pair,
-        history: initialHistory,
-        hasWon: false,
-        opponentWon: false,
-        opponent: initOpponent,
-        updatedAt: Date.now(),
-      });
-      setActiveSavedGame(getActiveGameSession());
-
-      setGameType("peer");
-      setView("playing");
-      setTimeout(() => inputRef.current?.focus(), 150);
+      beginPeerRound(msg.data.targetPair as WordPair, opp);
     });
 
-    channel.subscribe("peer_step", (msg: any) => {
-      if (msg.data.clientId !== myClientId) {
-        setOpponent((prev) => {
-          const currentSteps = prev?.steps ?? [];
-          return {
-            clientId: msg.data.clientId,
-            name: msg.data.name || "Opponent",
-            steps: [
-              ...currentSteps,
-              {
-                step: msg.data.step,
-                relatedness: msg.data.relatedness,
-                word: msg.data.isGameOver ? msg.data.word : undefined,
-              },
-            ],
-            hasWon: msg.data.hasWon,
-            finalHistory: msg.data.finalHistory ?? prev?.finalHistory,
-          };
-        });
+    subscribeGameEvents(channel);
 
-        if (msg.data.hasWon) {
-          setOpponentWon(true);
-          revealMyPath();
-          if (targetPair) {
-            saveMatchResult({
-              roomCode: code,
-              sourceWord: targetPair.source,
-              targetWord: targetPair.target,
-              myUsername: username,
-              mySteps: Math.max(0, historyRef.current.length - 1),
-              myPath: historyRef.current.map((s) => s.word),
-              opponentName: opponent?.name || msg.data.name || "Opponent",
-              opponentSteps: msg.data.finalHistory ? msg.data.finalHistory.length - 1 : undefined,
-              opponentPath: msg.data.finalHistory,
-              result: "lost",
-            });
-            setMatchHistory(getMatchHistory());
-            clearActiveGameSession();
-            setActiveSavedGame(null);
-          }
-        }
-      }
-    });
+    // Subscribe before publishing so a fast host reply is never missed
+    channel.publish("join_request", { name: username });
 
-    // Feature 2b: Peer rematch handshake (identical on host + challenger side)
-    channel.subscribe("rematch_request", (msg: any) => {
-      if (msg.data.clientId === myClientId) return;
-      rematchOpponentRef.current = true;
-      maybeStartRematch();
-    });
-
-    channel.subscribe("rematch_cancel", (msg: any) => {
-      if (msg.data.clientId === myClientId) return;
-      rematchOpponentRef.current = false;
-    });
-
-    channel.subscribe("rematch_start", (msg: any) => {
-      if (isHostRef.current || msg.data.clientId === myClientId) return;
-      startRematchRound(msg.data.targetPair as WordPair);
-    });
-
-    // Feature 2: Symmetric path reveal at game over (loser shares their list with the winner)
-    channel.subscribe("reveal_path", (msg: any) => {
-      if (msg.data.clientId === myClientId) return;
-      setOpponent((prev) => ({
-        ...(prev ?? { clientId: msg.data.clientId, name: "Opponent", steps: [], hasWon: false }),
-        finalHistory: msg.data.finalHistory,
-      }));
-    });
+    // Give up if no host responds (wrong code, or host is offline)
+    joinTimeoutRef.current = setTimeout(() => {
+      joinTimeoutRef.current = null;
+      failJoin(`No response from room ${code}. Check the code or ask the host to share it again.`);
+    }, 30000);
   };
 
   // Feature 2b: Peer Rematch
-  const startRematchRound = (pair: WordPair) => {
-    setActiveDefinition(null);
-    setTargetPair(pair);
-    setTargetProximity(pair.baselineScore ?? 15);
-    setHistory([{ word: pair.source, relatednessToPrevious: 100, scoreVal: 3.0 }]);
-    setNextWord("");
-    setFeedback(null);
-    setHasWon(false);
-    setOpponentWon(false);
-    setFinalScore(null);
-    setFailedAttempts(0);
-    setCopied(false);
-    setProximityDelta(null);
-    setOpponent((prev) => ({
-      clientId: prev?.clientId ?? "",
-      name: prev?.name ?? "Opponent",
-      steps: [{ step: 1, relatedness: 100 }],
-      hasWon: false,
-    }));
+  const startRematchRound = (pair: WordPair, round: number) => {
+    roundRef.current = round;
+    const prev = opponentRef.current;
+    const opp: OpponentState = { clientId: prev?.clientId ?? "", name: prev?.name ?? "Opponent", steps: [], hasWon: false };
     rematchRequestedRef.current = false;
     rematchOpponentRef.current = false;
     rematchStartedRef.current = false;
     setRematchState("idle");
-    setTimeout(() => inputRef.current?.focus(), 150);
+    beginPeerRound(pair, opp);
   };
 
   const maybeStartRematch = async () => {
@@ -688,17 +814,17 @@ export default function GamePage() {
     setRematchState("starting");
     try {
       const res = await fetch("/api/pair");
-      const pair: WordPair = await res.json();
-      ablyChannelRef.current?.publish("rematch_start", {
-        clientId: myClientId,
-        targetPair: pair,
-      });
-      startRematchRound(pair);
-    } catch (err) {
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || "Failed to generate a word pair");
+      const pair: WordPair = body;
+      const nextRound = roundRef.current + 1;
+      ablyChannelRef.current?.publish("rematch_start", { targetPair: pair, round: nextRound });
+      startRematchRound(pair, nextRound);
+    } catch (err: any) {
       console.error("Failed to load rematch pair:", err);
       rematchStartedRef.current = false;
       setRematchState("requested");
-      setFeedback({ type: "error", message: "Failed to start rematch. Please try again." });
+      setFeedback({ type: "error", message: err?.message || "Failed to start rematch. Please try again." });
     }
   };
 
@@ -710,32 +836,26 @@ export default function GamePage() {
       rematchRequestedRef.current = false;
       rematchOpponentRef.current = false;
       setRematchState("idle");
-      ablyChannelRef.current.publish("rematch_cancel", { clientId: myClientId });
+      ablyChannelRef.current.publish("rematch_cancel", {});
       return;
     }
 
     rematchRequestedRef.current = true;
     setRematchState("requested");
-    ablyChannelRef.current.publish("rematch_request", { clientId: myClientId });
+    ablyChannelRef.current.publish("rematch_request", {});
     maybeStartRematch();
   };
 
   const goHome = () => {
+    leaveChannel();
     rematchRequestedRef.current = false;
     rematchOpponentRef.current = false;
     rematchStartedRef.current = false;
     setRematchState("idle");
+    setLobbyStatus("idle");
+    setPendingGuest(null);
+    setFeedback(null);
     setView("home");
-  };
-
-  const revealMyPath = () => {
-    // Loser shares their (possibly incomplete) word list with the winner at game over
-    if (ablyChannelRef.current) {
-      ablyChannelRef.current.publish("reveal_path", {
-        clientId: myClientId,
-        finalHistory: historyRef.current.map((s) => s.word),
-      });
-    }
   };
 
   const shareJoinLink = async () => {
@@ -798,10 +918,68 @@ export default function GamePage() {
   const canSubmit = candidateLower.length >= 2 && !isDuplicate && !isSameAsCurrent && !loading;
 
   const currentStepCount = Math.max(0, history.length - 1);
-  const currentLiveScore = Math.max(
-    500,
-    10000 - Math.max(0, currentStepCount - 4) * 400 - failedAttempts * 150
-  );
+  // Same formula as the final score, projected as if the next step reaches the target
+  const currentLiveScore =
+    finalScore?.totalScore ??
+    (targetPair
+      ? calculateGameScore({
+          baselineScore: targetPair.baselineScore ?? 15,
+          stepCount: currentStepCount + 1,
+          stepSimilarities: history.slice(1).map((s) => s.relatednessToPrevious),
+          failedAttempts,
+        }).totalScore
+      : 0);
+
+  const updateProximity = (newProximityPct: number) => {
+    if (newProximityPct > targetProximity) setProximityDelta("hotter");
+    else if (newProximityPct < targetProximity) setProximityDelta("colder");
+    else setProximityDelta(null);
+    setTargetProximity(newProximityPct);
+  };
+
+  // Fog of war broadcast: opponent sees step count + relatedness, words only at game over
+  const publishPeerStep = (steps: StepRecord[], won: boolean) => {
+    ablyChannelRef.current?.publish("peer_step", {
+      name: usernameRef.current,
+      round: roundRef.current,
+      step: steps.length - 1,
+      relatedness: steps[steps.length - 1].relatednessToPrevious,
+      hasWon: won,
+      finalHistory: won ? steps.map((s) => s.word) : undefined,
+    });
+  };
+
+  const submitRankedDailyStep = async () => {
+    const res = await fetch("/api/daily", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ word: candidateLower }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Evaluation failed");
+
+    const pair = targetPairRef.current;
+    if (pair) applyDailyRun(data.run as DailyRunState, pair);
+
+    if (!data.accepted) {
+      setFeedback({
+        type: "warning",
+        message: `Too distant from "${currentWord}"`,
+        score: data.relatedness,
+        threshold: STEP_THRESHOLD,
+      });
+      return;
+    }
+
+    updateProximity(data.proximity);
+    setNextWord("");
+    const run: DailyRunState = data.run;
+    setFeedback(
+      run.finished
+        ? { type: "success", message: `Reached "${targetWord}" in ${run.path.length - 1} steps.`, score: data.relatedness }
+        : { type: "success", message: `Step accepted • Target: ${data.proximity}%`, score: data.relatedness }
+    );
+  };
 
   const handleStepSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -812,6 +990,11 @@ export default function GamePage() {
     setFeedback(null);
 
     try {
+      if (gameType === "daily" && dailyRanked) {
+        await submitRankedDailyStep();
+        return;
+      }
+
       const res = await fetch("/api/compare", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -825,142 +1008,64 @@ export default function GamePage() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Evaluation failed");
 
-      const noulProbability = data?.answers?.are_related?.noul ?? 0;
-      const scoreVal = data?.answers?.similarity_score?.score ?? 0;
-      const pct = Math.round(noulProbability * 100);
-      const newProximityPct = Math.round((data?.answers?.proximity_to_target?.noul ?? 0) * 100);
+      const pct: number = data.relatedness;
+      const proximity: number = data.proximity;
 
-      // Check 70% threshold
-      if (pct < 70) {
+      if (pct < STEP_THRESHOLD) {
         setFailedAttempts((prev) => prev + 1);
         setFeedback({
           type: "warning",
           message: `Too distant from "${currentWord}"`,
           score: pct,
-          threshold: 70,
+          threshold: STEP_THRESHOLD,
         });
-        setLoading(false);
         return;
       }
 
-      // Feature 1: Semantic Compass comparison
-      if (newProximityPct > targetProximity) {
-        setProximityDelta("hotter");
-      } else if (newProximityPct < targetProximity) {
-        setProximityDelta("colder");
-      } else {
-        setProximityDelta(null);
-      }
-      setTargetProximity(newProximityPct);
+      updateProximity(proximity);
 
-      const newHistory: StepRecord[] = [
+      const withCandidate: StepRecord[] = [
         ...history,
-        { word: candidateLower, relatednessToPrevious: pct, scoreVal },
+        { word: candidateLower, relatednessToPrevious: pct, scoreVal: data.similarityScore },
       ];
-      setHistory(newHistory);
+      const hitTarget = candidateLower === targetWord.toLowerCase();
+      // Auto-connect if candidate is >= 70% related to the target
+      const autoConnect = !hitTarget && proximity >= STEP_THRESHOLD;
+      const finalSteps: StepRecord[] = autoConnect
+        ? [...withCandidate, { word: targetWord, relatednessToPrevious: proximity, scoreVal: 3.0 }]
+        : withCandidate;
+      const won = hitTarget || autoConnect;
+
+      setHistory(finalSteps);
+      historyRef.current = finalSteps;
       setNextWord("");
 
-      // Feature 2: Fog of War Peer Broadcast
-      if (gameType === "peer" && ablyChannelRef.current) {
-        ablyChannelRef.current.publish("peer_step", {
-          clientId: myClientId,
-          name: username,
-          step: newHistory.length,
-          relatedness: pct,
-          hasWon: false,
-          isGameOver: false,
-        });
-        if (targetPair) {
-          saveActiveGameSession({
-            roomCode,
-            isHost,
-            targetPair,
-            history: newHistory,
-            hasWon: false,
-            opponentWon: false,
-            opponent,
-            updatedAt: Date.now(),
-          });
-        }
+      if (gameType === "peer") {
+        if (won) hasWonRef.current = true; // reflect immediately for reconnect state sync
+        if (autoConnect) publishPeerStep(withCandidate, false);
+        publishPeerStep(finalSteps, won);
+        persistSession({ history: finalSteps, hasWon: won });
       }
 
-      const finalizeVictory = (finalSteps: StepRecord[]) => {
-        const stepSimilarities = finalSteps.slice(1).map((s) => s.relatednessToPrevious);
-        const score = calculateGameScore({
-          baselineScore: targetPair?.baselineScore ?? 15,
-          stepCount: finalSteps.length - 1,
-          stepSimilarities,
-          failedAttempts,
-        });
-        setFinalScore(score);
+      if (won) {
+        setFinalScore(
+          calculateGameScore({
+            baselineScore: targetPair?.baselineScore ?? 15,
+            stepCount: finalSteps.length - 1,
+            stepSimilarities: finalSteps.slice(1).map((s) => s.relatednessToPrevious),
+            failedAttempts,
+          })
+        );
         setHasWon(true);
-
-        if (gameType === "peer" && ablyChannelRef.current) {
-          ablyChannelRef.current.publish("peer_step", {
-            clientId: myClientId,
-            name: username,
-            step: finalSteps.length,
-            relatedness: 100,
-            hasWon: true,
-            isGameOver: true,
-            finalHistory: finalSteps.map((s) => s.word),
-          });
-        }
-
-        if (gameType === "peer" && targetPair) {
-          saveMatchResult({
-            roomCode,
-            sourceWord: targetPair.source,
-            targetWord: targetPair.target,
-            myUsername: username,
-            mySteps: finalSteps.length - 1,
-            myPath: finalSteps.map((s) => s.word),
-            opponentName: opponent?.name || "Opponent",
-            opponentSteps: opponent?.steps.length,
-            opponentPath: opponent?.finalHistory,
-            result: "won",
-          });
-          setMatchHistory(getMatchHistory());
-          clearActiveGameSession();
-          setActiveSavedGame(null);
-        }
-      };
-
-      // Direct target hit
-      if (candidateLower === targetWord.toLowerCase()) {
-        finalizeVictory(newHistory);
         setFeedback({
           type: "success",
-          message: `Reached "${targetWord}" in ${newHistory.length - 1} steps.`,
-          score: pct,
-        });
-        setLoading(false);
-        return;
-      }
-
-      // Auto-connect if candidate is >= 70% to target
-      if (newProximityPct >= 70) {
-        const finalHistory: StepRecord[] = [
-          ...newHistory,
-          {
-            word: targetWord,
-            relatednessToPrevious: newProximityPct,
-            scoreVal: 3.0,
-          },
-        ];
-        setHistory(finalHistory);
-        finalizeVictory(finalHistory);
-        setFeedback({
-          type: "success",
-          message: `Connected to "${targetWord}" (${newProximityPct}% related).`,
-          score: newProximityPct,
+          message: hitTarget
+            ? `Reached "${targetWord}" in ${finalSteps.length - 1} steps.`
+            : `Connected to "${targetWord}" (${proximity}% related).`,
+          score: hitTarget ? pct : proximity,
         });
       } else {
-        setFeedback({
-          type: "success",
-          message: `Step accepted • Target: ${newProximityPct}%`,
-          score: pct,
-        });
+        setFeedback({ type: "success", message: `Step accepted • Target: ${proximity}%`, score: pct });
       }
     } catch (err: any) {
       setFeedback({
@@ -1029,20 +1134,7 @@ export default function GamePage() {
       <div className="min-h-screen bg-black text-zinc-100 flex flex-col items-center justify-center p-6 selection:bg-zinc-800 selection:text-white">
         <div className="w-full max-w-md space-y-6">
           {/* Player Identity Bar */}
-          <div className="flex items-center justify-between p-2.5 bg-zinc-950 border border-zinc-800/80 rounded-xl">
-            <div className="flex items-center gap-2">
-              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-              <span className="text-[11px] font-mono text-zinc-400">Player:</span>
-              <span className="text-xs font-semibold text-white font-mono">{username}</span>
-            </div>
-            <button
-              onClick={handleRerollUsername}
-              title="Get new random username"
-              className="text-[11px] font-mono text-zinc-400 hover:text-white border border-zinc-800 hover:border-zinc-700 bg-zinc-900 px-2 py-0.5 rounded transition"
-            >
-              🎲 Re-roll
-            </button>
-          </div>
+          <PlayerIdentity username={username} label={user ? "Player:" : "Guest:"} onSave={handleSaveUsername} />
 
           {/* Google Sign-in (optional; guest play still works) */}
           {authEnabled && !authLoading && (
@@ -1134,12 +1226,18 @@ export default function GamePage() {
                   </span>
                 </div>
                 <span className="text-xs text-zinc-600 block mt-0.5">
-                  Synchronized puzzle globally every 24h
+                  {user ? "One ranked attempt per day" : "Same puzzle for everyone • sign in to rank"}
                 </span>
               </div>
               <span className="text-sm font-mono text-zinc-500 group-hover:translate-x-0.5 transition-transform">
                 →
               </span>
+            </button>
+            <button
+              onClick={() => setView("leaderboard")}
+              className="w-full -mt-1 py-2 text-xs font-mono text-zinc-400 hover:text-white border border-zinc-800 hover:border-zinc-700 bg-zinc-950 rounded-xl transition"
+            >
+              View today&apos;s leaderboard
             </button>
 
             {/* Solo Practice */}
@@ -1162,7 +1260,7 @@ export default function GamePage() {
             <button
               onClick={() => {
                 setActiveSavedGame(getActiveGameSession());
-                setMatchHistory(getMatchHistory());
+                refreshMatchHistory();
                 setView("lobby");
               }}
               className="w-full p-4 bg-zinc-900 border border-zinc-800 hover:border-zinc-700 hover:bg-zinc-850 text-white transition-colors rounded-xl flex items-center justify-between text-left group"
@@ -1215,6 +1313,25 @@ export default function GamePage() {
   }
 
   // ==========================================
+  // VIEW: DAILY LEADERBOARD
+  // ==========================================
+  if (view === "leaderboard") {
+    return (
+      <div className="min-h-screen bg-black text-zinc-100 flex flex-col items-center justify-center p-4 sm:p-6">
+        <div className="w-full max-w-md bg-zinc-950 border border-zinc-800 rounded-2xl p-5 sm:p-7 space-y-4">
+          <div className="flex items-center justify-between pb-3 border-b border-zinc-800/40">
+            <h2 className="text-base font-semibold text-white">Daily Leaderboard</h2>
+            <button onClick={goHome} className="text-xs text-zinc-400 hover:text-white transition-colors font-mono">
+              ← Back
+            </button>
+          </div>
+          <DailyLeaderboard />
+        </div>
+      </div>
+    );
+  }
+
+  // ==========================================
   // VIEW 2: PEER LOBBY & MATCH HISTORY
   // ==========================================
   if (view === "lobby") {
@@ -1228,7 +1345,7 @@ export default function GamePage() {
               <span className="text-xs text-zinc-500 font-mono">Fog of War Race</span>
             </div>
             <button
-              onClick={() => setView("home")}
+              onClick={goHome}
               className="text-xs text-zinc-400 hover:text-white transition-colors font-mono"
             >
               ← Back
@@ -1236,59 +1353,7 @@ export default function GamePage() {
           </div>
 
           {/* Player Identity Pill */}
-          <div className="flex items-center justify-between p-2.5 bg-zinc-900/60 border border-zinc-800/60 rounded-xl text-xs font-mono">
-            {isEditingUsername ? (
-              <div className="flex items-center gap-2 w-full">
-                <input
-                  type="text"
-                  value={tempUsername}
-                  onChange={(e) => setTempUsername(e.target.value)}
-                  placeholder="New username"
-                  maxLength={16}
-                  autoFocus
-                  className="flex-1 bg-zinc-950 border border-zinc-700 px-2 py-1 rounded text-white text-xs focus:outline-none"
-                />
-                <button
-                  onClick={() => handleSaveCustomUsername(tempUsername)}
-                  className="px-2 py-1 bg-white text-black font-semibold rounded text-xs"
-                >
-                  Save
-                </button>
-                <button
-                  onClick={() => setIsEditingUsername(false)}
-                  className="px-2 py-1 bg-zinc-800 text-zinc-400 rounded text-xs"
-                >
-                  Cancel
-                </button>
-              </div>
-            ) : (
-              <>
-                <div className="flex items-center gap-2">
-                  <span className="text-zinc-500">You:</span>
-                  <span className="font-semibold text-zinc-200">{username}</span>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <button
-                    onClick={() => {
-                      setTempUsername(username);
-                      setIsEditingUsername(true);
-                    }}
-                    title="Edit username"
-                    className="text-[11px] text-zinc-400 hover:text-white px-1.5 py-0.5 rounded hover:bg-zinc-800 transition"
-                  >
-                    Edit
-                  </button>
-                  <button
-                    onClick={handleRerollUsername}
-                    title="Generate new random username"
-                    className="text-[11px] text-zinc-400 hover:text-white px-1.5 py-0.5 rounded hover:bg-zinc-800 transition"
-                  >
-                    🎲
-                  </button>
-                </div>
-              </>
-            )}
-          </div>
+          <PlayerIdentity username={username} label="You:" onSave={handleSaveUsername} />
 
           {/* Lobby Navigation Tabs */}
           <div className="grid grid-cols-2 gap-1 p-1 bg-zinc-900 border border-zinc-800 rounded-xl text-xs font-mono">
@@ -1304,7 +1369,7 @@ export default function GamePage() {
             </button>
             <button
               onClick={() => {
-                setMatchHistory(getMatchHistory());
+                refreshMatchHistory();
                 setLobbyTab("history");
               }}
               className={`py-1.5 rounded-lg transition text-center font-medium ${
@@ -1403,9 +1468,10 @@ export default function GamePage() {
 
                       <button
                         onClick={handleAcceptGuest}
-                        className="w-full py-3 bg-white text-black font-semibold rounded-lg text-sm hover:bg-zinc-200 transition-colors font-mono"
+                        disabled={!targetPair}
+                        className="w-full py-3 bg-white text-black font-semibold rounded-lg text-sm hover:bg-zinc-200 transition-colors font-mono disabled:opacity-40"
                       >
-                        Accept & Begin Match
+                        {targetPair ? "Accept & Begin Match" : "Preparing words…"}
                       </button>
                     </div>
                   ) : (
@@ -1561,8 +1627,8 @@ export default function GamePage() {
               {matchHistory.length > 0 && (
                 <div className="pt-1 flex justify-end">
                   <button
-                    onClick={() => {
-                      clearMatchHistory();
+                    onClick={async () => {
+                      await clearAllMatches(user);
                       setMatchHistory([]);
                     }}
                     className="text-[10px] font-mono text-zinc-500 hover:text-rose-400 transition"
@@ -1587,7 +1653,7 @@ export default function GamePage() {
       <header className="w-full max-w-xl flex items-center justify-between py-1.5 sm:py-2 border-b border-zinc-800/40 mb-2 sm:mb-3 shrink-0">
         <div className="flex items-center gap-2.5 sm:gap-3">
           <button
-            onClick={() => setView("home")}
+            onClick={goHome}
             className="text-xs text-zinc-400 hover:text-white transition-colors"
           >
             ← Exit
@@ -1611,7 +1677,17 @@ export default function GamePage() {
 
       {/* Main Game Container */}
       <main className="w-full max-w-xl flex-1 flex flex-col justify-between bg-zinc-950 border border-zinc-800/40 rounded-xl sm:rounded-2xl p-3 sm:p-5 shadow-xl relative min-h-0 overflow-hidden">
-        {loadingPair || !targetPair ? (
+        {pairError ? (
+          <div className="flex-1 flex flex-col items-center justify-center min-h-0 space-y-3 text-center">
+            <p className="text-xs font-mono text-rose-400">{pairError}</p>
+            <button
+              onClick={() => initGame(gameType === "daily" ? "daily" : "solo")}
+              className="px-4 py-2 bg-white text-black font-semibold rounded-lg text-xs hover:bg-zinc-200 transition-colors"
+            >
+              Retry
+            </button>
+          </div>
+        ) : loadingPair || !targetPair ? (
           <div className="flex-1 flex flex-col items-center justify-center min-h-0 space-y-3">
             <div className="w-6 h-6 border-2 border-zinc-700 border-t-white rounded-full animate-spin"></div>
             <p className="text-xs font-mono text-zinc-500">
@@ -1631,7 +1707,7 @@ export default function GamePage() {
                       <span className="font-semibold text-zinc-200">Opponent: {opponent.name}</span>
                     </div>
                     <span className="font-mono text-zinc-500 text-[11px]">
-                      Step {opponent.steps.length} {opponent.hasWon ? "• Finished" : ""}
+                      {opponent.steps.length} {opponent.steps.length === 1 ? "step" : "steps"} {opponent.hasWon ? "• Finished" : ""}
                     </span>
                   </div>
 
@@ -1863,14 +1939,28 @@ export default function GamePage() {
                 <div className="p-3.5 sm:p-5 bg-zinc-900/80 border border-zinc-800/40 rounded-xl text-center space-y-2.5 sm:space-y-3">
                   <div className="space-y-0.5">
                     <span className="text-[10px] font-mono uppercase tracking-widest text-zinc-500 block">
-                      {hasWon ? (opponentWon ? "Finished 2nd" : "Bridge Completed") : "Match Finished"}
+                      {gameType === "peer"
+                        ? raceWinner === "me"
+                          ? "You Won the Race"
+                          : hasWon
+                          ? "Finished 2nd"
+                          : "Opponent Won"
+                        : "Bridge Completed"}
                     </span>
-                    <div className="text-2xl sm:text-3xl font-bold font-mono tracking-tight text-white">
-                      Rank {finalScore?.rank ?? "A"}
-                    </div>
-                    <div className="text-xs text-zinc-400 font-mono">
-                      {finalScore ? `${finalScore.totalScore.toLocaleString()} points` : ""}
-                    </div>
+                    {finalScore ? (
+                      <>
+                        <div className="text-2xl sm:text-3xl font-bold font-mono tracking-tight text-white">
+                          Rank {finalScore.rank}
+                        </div>
+                        <div className="text-xs text-zinc-400 font-mono">
+                          {finalScore.totalScore.toLocaleString()} points
+                        </div>
+                      </>
+                    ) : (
+                      <div className="text-sm text-zinc-300 font-mono pt-1">
+                        {opponent?.name ?? "Your opponent"} reached the target first.
+                      </div>
+                    )}
                   </div>
 
                   {/* Multiplayer Reveal */}
@@ -1892,13 +1982,20 @@ export default function GamePage() {
 
                   {/* Daily Challenge Global Benchmark */}
                   {gameType === "daily" && (
-                    <div className="p-2 sm:p-2.5 bg-zinc-950 border border-zinc-800/40 rounded-lg text-xs font-mono text-left">
-                      <span className="text-[10px] uppercase text-zinc-400 block mb-0.5">
-                        Daily Benchmark
-                      </span>
-                      <p className="text-zinc-300 text-xs">
-                        Solved in {history.length - 1} steps. Target par: 4 steps.
-                      </p>
+                    <div className="p-2 sm:p-2.5 bg-zinc-950 border border-zinc-800/40 rounded-lg max-h-40 overflow-y-auto">
+                      {dailyRanked ? (
+                        <DailyLeaderboard compact refreshKey={history.length} />
+                      ) : (
+                        <p className="text-xs font-mono text-zinc-400 text-left">
+                          Unranked guest run.{" "}
+                          {authEnabled && (
+                            <button onClick={signInWithGoogle} className="text-white underline">
+                              Sign in
+                            </button>
+                          )}{" "}
+                          to get one ranked attempt per day on the leaderboard.
+                        </p>
+                      )}
                     </div>
                   )}
 
@@ -1942,18 +2039,26 @@ export default function GamePage() {
                   )}
 
                   <div className="flex gap-2 pt-0.5">
-                    <button
-                      onClick={shareResult}
-                      className="flex-1 py-2 sm:py-2.5 bg-white text-black font-semibold rounded-lg text-sm hover:bg-zinc-200 transition-colors"
-                    >
-                      {copied ? "Copied" : "Share Result"}
-                    </button>
+                    {finalScore && (
+                      <button
+                        onClick={shareResult}
+                        className="flex-1 py-2 sm:py-2.5 bg-white text-black font-semibold rounded-lg text-sm hover:bg-zinc-200 transition-colors"
+                      >
+                        {copied ? "Copied" : "Share Result"}
+                      </button>
+                    )}
 
                     <button
-                      onClick={() => (gameType === "peer" ? goHome() : initGame(gameType))}
+                      onClick={() =>
+                        gameType === "peer"
+                          ? goHome()
+                          : gameType === "daily"
+                          ? setView("leaderboard")
+                          : initGame("solo")
+                      }
                       className="flex-1 py-2 sm:py-2.5 bg-zinc-800 text-zinc-200 hover:text-white hover:bg-zinc-700 font-semibold rounded-lg text-sm transition-colors border border-zinc-700"
                     >
-                      {gameType === "peer" ? "Main Menu" : "Play Next"}
+                      {gameType === "peer" ? "Main Menu" : gameType === "daily" ? "Leaderboard" : "Play Next"}
                     </button>
                   </div>
                 </div>

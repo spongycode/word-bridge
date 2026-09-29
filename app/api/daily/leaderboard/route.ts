@@ -1,0 +1,52 @@
+import { NextResponse } from "next/server";
+import { getSessionUserId } from "@/app/lib/supabase/session";
+import { getSupabaseAdmin } from "@/app/lib/supabase/admin";
+import { getUtcDayString } from "@/app/lib/vocabulary";
+import type { LeaderboardEntry, LeaderboardResponse } from "@/app/lib/dailyRun";
+
+export const dynamic = "force-dynamic";
+
+const TOP_N = 50;
+
+export async function GET() {
+  const admin = getSupabaseAdmin();
+  if (!admin) return NextResponse.json({ error: "Leaderboard is not configured on the server." }, { status: 500 });
+
+  const day = getUtcDayString();
+  const userId = await getSessionUserId();
+
+  const { data, error } = await admin
+    .from("daily_runs")
+    .select("user_id, score, steps, failed_attempts, path, finished_at, profiles(username)")
+    .eq("day", day)
+    .eq("finished", true)
+    .order("score", { ascending: false })
+    .order("steps", { ascending: true })
+    .order("finished_at", { ascending: true })
+    .limit(1000);
+
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+  const rows = data ?? [];
+  // Paths are spoilers: only reveal them to players who already finished today
+  const pathsVisible = Boolean(userId && rows.some((r) => r.user_id === userId));
+
+  const ranked: LeaderboardEntry[] = rows.map((r: any, i) => ({
+    rank: i + 1,
+    username: r.profiles?.username ?? "Player",
+    score: r.score,
+    steps: r.steps,
+    misses: r.failed_attempts,
+    path: pathsVisible ? r.path : undefined,
+    isMe: r.user_id === userId,
+  }));
+
+  const body: LeaderboardResponse = {
+    day,
+    totalFinished: ranked.length,
+    entries: ranked.slice(0, TOP_N),
+    me: ranked.find((e) => e.isMe) ?? null,
+    pathsVisible,
+  };
+  return NextResponse.json(body);
+}

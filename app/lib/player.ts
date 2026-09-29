@@ -28,11 +28,14 @@ export interface ActiveGameSession {
   hasWon: boolean;
   opponentWon: boolean;
   opponent: OpponentState | null;
+  matchId: string;
+  round: number;
   updatedAt: number;
 }
 
 export interface MatchHistoryItem {
   id: string;
+  matchKey: string; // matchId#round, unique per rematch round
   roomCode: string;
   sourceWord: string;
   targetWord: string;
@@ -46,63 +49,35 @@ export interface MatchHistoryItem {
   timestamp: number;
 }
 
-const ADJECTIVES = [
-  "Swift", "Cosmic", "Neon", "Brave", "Silent", "Shadow", "Stellar", "Frost",
-  "Solar", "Quantum", "Hyper", "Vivid", "Astral", "Echo", "Iron", "Phantom",
-  "Vortex", "Mystic", "Thunder", "Zenith", "Blaze", "Apex", "Nova", "Pulse",
-  "Crimson", "Amber", "Velvet", "Onyx", "Cobalt", "Rogue", "Noble", "Prism"
-];
+export const USERNAME_PATTERN = /^[A-Za-z0-9_-]{3,16}$/;
 
-const NOUNS = [
-  "Falcon", "Fox", "Otter", "Hawk", "Wolf", "Lynx", "Panda", "Viper",
-  "Eagle", "Deer", "Raven", "Tiger", "Badger", "Jaguar", "Kestrel", "Cobra",
-  "Osprey", "Bison", "Orion", "Nomad", "Sphinx", "Griffin", "Drifter", "Pioneer",
-  "Phoenix", "Cypher", "Ronin", "Voyager", "Matrix", "Tracker", "Wanderer"
-];
-
-export function getOrCreateDeviceId(): string {
-  if (typeof window === "undefined") return "dev_server";
-  try {
-    let id = localStorage.getItem("wordbridge_device_id");
-    if (!id) {
-      id = `dev_${Math.random().toString(36).substring(2, 9)}_${Date.now().toString(36)}`;
-      localStorage.setItem("wordbridge_device_id", id);
-    }
-    return id;
-  } catch {
-    return `dev_${Math.random().toString(36).substring(2, 9)}`;
-  }
+function generateGuestName(): string {
+  return `Guest${Math.floor(1000 + Math.random() * 9000)}`;
 }
 
-export function generateRandomUsername(): string {
-  const adj = ADJECTIVES[Math.floor(Math.random() * ADJECTIVES.length)];
-  const noun = NOUNS[Math.floor(Math.random() * NOUNS.length)];
-  const num = Math.floor(10 + Math.random() * 90);
-  return `${adj}${noun}_${num}`;
-}
-
-export function getOrCreateUsername(): string {
-  if (typeof window === "undefined") return "Player";
+// Guests get a stable "GuestNNNN" name they can edit; signed-in players use their profile username
+export function getOrCreateGuestName(): string {
+  if (typeof window === "undefined") return "Guest";
   try {
     let name = localStorage.getItem("wordbridge_username");
-    if (!name || name.trim().length === 0) {
-      name = generateRandomUsername();
+    if (!name || !USERNAME_PATTERN.test(name)) {
+      name = generateGuestName();
       localStorage.setItem("wordbridge_username", name);
     }
     return name;
   } catch {
-    return "Player";
+    return "Guest";
   }
 }
 
-export function saveUsername(name: string): string {
-  const clean = name.trim().replace(/[^a-zA-Z0-9_-]/g, "").substring(0, 16) || generateRandomUsername();
-  if (typeof window !== "undefined") {
-    try {
-      localStorage.setItem("wordbridge_username", clean);
-    } catch {}
-  }
-  return clean;
+// Returns an error message, or null when the guest name was saved
+export function saveGuestName(name: string): string | null {
+  const clean = name.trim();
+  if (!USERNAME_PATTERN.test(clean)) return "Use 3-16 letters, numbers, _ or -.";
+  try {
+    localStorage.setItem("wordbridge_username", clean);
+  } catch {}
+  return null;
 }
 
 // ==========================================
@@ -162,15 +137,25 @@ export function getMatchHistory(): MatchHistoryItem[] {
 export function saveMatchResult(item: Omit<MatchHistoryItem, "id" | "timestamp">) {
   if (typeof window === "undefined") return;
   try {
-    const history = getMatchHistory();
+    const history = getMatchHistory().filter((m) => m.matchKey !== item.matchKey);
     const newItem: MatchHistoryItem = {
       ...item,
       id: `match_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 6)}`,
       timestamp: Date.now(),
     };
     // Keep last 30 matches
-    const updated = [newItem, ...history.filter(m => m.roomCode !== item.roomCode || Math.abs(m.timestamp - Date.now()) > 60000)].slice(0, 30);
-    localStorage.setItem(MATCH_HISTORY_KEY, JSON.stringify(updated));
+    localStorage.setItem(MATCH_HISTORY_KEY, JSON.stringify([newItem, ...history].slice(0, 30)));
+  } catch {}
+}
+
+// The winner learns the loser's path after saving; patch it into the stored record
+export function attachOpponentPath(matchKey: string, opponentPath: string[]) {
+  if (typeof window === "undefined") return;
+  try {
+    const history = getMatchHistory().map((m) =>
+      m.matchKey === matchKey ? { ...m, opponentPath, opponentSteps: Math.max(0, opponentPath.length - 1) } : m
+    );
+    localStorage.setItem(MATCH_HISTORY_KEY, JSON.stringify(history));
   } catch {}
 }
 
