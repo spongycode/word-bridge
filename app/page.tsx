@@ -30,6 +30,7 @@ import { buildShareText, dailyNumber, linkSquares } from "./lib/share";
 import { linkTier, TIER_STYLES } from "./lib/links";
 import BridgePath from "./components/BridgePath";
 import Logo from "./components/Logo";
+import ClosenessGauge from "./components/ClosenessGauge";
 
 const STEP_THRESHOLD = 70;
 
@@ -72,6 +73,10 @@ export default function GamePage() {
   // Feature 1: Semantic Compass (Heatmap / Proximity)
   const [targetProximity, setTargetProximity] = useState<number>(0);
   const [proximityDelta, setProximityDelta] = useState<"hotter" | "colder" | null>(null);
+  const targetProximityRef = useRef(0);
+  useEffect(() => {
+    targetProximityRef.current = targetProximity;
+  }, [targetProximity]);
 
   // Feature 2: Fog of War Peer Multiplayer
   const [guestName, setGuestName] = useState<string>("Guest");
@@ -589,6 +594,7 @@ export default function GamePage() {
           steps: [...opp.steps, { step: d.step, relatedness: d.relatedness }],
           hasWon: d.hasWon,
           finalHistory: d.finalHistory ?? opp.finalHistory,
+          proximity: typeof d.proximity === "number" ? d.proximity : opp.proximity,
         });
         if (d.hasWon) {
           opponentWonRef.current = true;
@@ -620,6 +626,7 @@ export default function GamePage() {
         name: usernameRef.current,
         steps: historyRef.current.slice(1).map((s, i) => ({ step: i + 1, relatedness: s.relatednessToPrevious })),
         hasWon: hasWonRef.current,
+        proximity: hasWonRef.current ? 100 : targetProximityRef.current,
         finalHistory: winner || hasWonRef.current ? historyRef.current.map((s) => s.word) : undefined,
         raceWinnerId: winner === "me" ? myIdRef.current : winner === "opponent" ? opp?.clientId : null,
       });
@@ -634,6 +641,7 @@ export default function GamePage() {
         steps: d.steps,
         hasWon: d.hasWon,
         finalHistory: d.finalHistory ?? opponentRef.current?.finalHistory,
+        proximity: typeof d.proximity === "number" ? d.proximity : opponentRef.current?.proximity,
       });
       if (d.hasWon) {
         opponentWonRef.current = true;
@@ -666,7 +674,8 @@ export default function GamePage() {
 
   // Common state reset when a 1v1 round begins.
   // awaitOpponent: random matches wait for the opponent to show up in the room before trusting they're there.
-  const beginPeerRound = (pair: WordPair, opp: OpponentState, awaitOpponent = false) => {
+  const beginPeerRound = (pair: WordPair, oppInit: OpponentState, awaitOpponent = false) => {
+    const opp: OpponentState = { ...oppInit, proximity: pair.baselineScore ?? 15 };
     setActiveDefinition(null);
     targetPairRef.current = pair;
     setTargetPair(pair);
@@ -1184,9 +1193,10 @@ export default function GamePage() {
   };
 
   // Fog of war broadcast: opponent sees step count + relatedness, words only at game over
-  const publishPeerStep = (steps: StepRecord[], won: boolean) => {
+  const publishPeerStep = (steps: StepRecord[], won: boolean, proximity: number) => {
     ablyChannelRef.current?.publish("peer_step", {
       name: usernameRef.current,
+      proximity,
       round: roundRef.current,
       step: steps.length - 1,
       relatedness: steps[steps.length - 1].relatednessToPrevious,
@@ -1218,9 +1228,9 @@ export default function GamePage() {
       return;
     }
 
-    updateProximity(data.proximity);
-    setNextWord("");
     const run: DailyRunState = data.run;
+    updateProximity(run.finished ? 100 : data.proximity);
+    setNextWord("");
     setFeedback(
       run.finished
         ? { type: "success", message: `Connected to "${targetWord}"!`, score: data.relatedness }
@@ -1290,12 +1300,13 @@ export default function GamePage() {
 
       if (gameType === "peer") {
         if (won) hasWonRef.current = true; // reflect immediately for reconnect state sync
-        if (autoConnect) publishPeerStep(withCandidate, false);
-        publishPeerStep(finalSteps, won);
+        if (autoConnect) publishPeerStep(withCandidate, false, proximity);
+        publishPeerStep(finalSteps, won, won ? 100 : proximity);
         persistSession({ history: finalSteps, hasWon: won });
       }
 
       if (won) {
+        setTargetProximity(100);
         setFinalScore(
           calculateGameScore({
             baselineScore: targetPair?.baselineScore ?? 15,
@@ -2019,23 +2030,16 @@ export default function GamePage() {
                 )}
               </div>
 
-              {/* Closeness to target */}
-              <div className="px-3 sm:px-4 py-2.5 bg-zinc-900/40 border border-zinc-800/30 rounded-xl space-y-2 text-sm">
-                <div className="flex items-center justify-between gap-3">
-                  <span className="text-zinc-400">Closeness to target</span>
-                  <span>
-                    {proximityDelta === "hotter" && <span className="text-emerald-400 mr-2">↑ warmer</span>}
-                    {proximityDelta === "colder" && <span className="text-sky-400 mr-2">↓ colder</span>}
-                    <b className="text-white font-mono">{targetProximity}%</b>
-                  </span>
-                </div>
-                <div className="w-full bg-zinc-800 h-2 rounded-full overflow-hidden">
-                  <div
-                    className="h-full rounded-full transition-all duration-500"
-                    style={{ width: `${Math.min(100, targetProximity)}%`, background: "var(--accent)" }}
-                  ></div>
-                </div>
-              </div>
+              {/* Closeness meter: your needle, plus your opponent's in a race */}
+              <ClosenessGauge
+                value={targetProximity}
+                delta={proximityDelta}
+                opponent={
+                  gameType === "peer" && opponent
+                    ? { name: opponent.name, value: opponent.hasWon ? 100 : opponent.proximity ?? targetPair.baselineScore ?? 0 }
+                    : null
+                }
+              />
             </div>
 
             {/* Middle: path (flex-1 min-h-0 overflow-y-auto) */}

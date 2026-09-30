@@ -18,6 +18,7 @@ export interface OpponentState {
   steps: OpponentStep[];
   hasWon: boolean;
   finalHistory?: string[];
+  proximity?: number; // opponent's latest closeness to the target (0-100)
 }
 
 export interface ActiveGameSession {
