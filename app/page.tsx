@@ -34,6 +34,11 @@ import ClosenessGauge from "./components/ClosenessGauge";
 
 const STEP_THRESHOLD = 70;
 
+// Definition stays up for ~3s plus reading time (~15 chars/sec), clamped to 4-12s
+function definitionDisplayMs(text: string): number {
+  return Math.min(12000, Math.max(4000, 3000 + text.length * 65));
+}
+
 export default function GamePage() {
   // Navigation: "home" | "lobby" | "playing"
   const { user, authLoading, authEnabled, signInWithGoogle, signOut } = useAuthUser();
@@ -56,6 +61,7 @@ export default function GamePage() {
   const [shakeInput, setShakeInput] = useState(false);
   const [dailyTeaser, setDailyTeaser] = useState<{ source: string; day: string } | null>(null);
   const [definitionHintSeen, setDefinitionHintSeen] = useState(true);
+  const [definitionPaused, setDefinitionPaused] = useState(false);
   // Random matchmaking: "searching" while queued; opponentConnected once they appear in the room
   const [searching, setSearching] = useState(false);
   const [opponentConnected, setOpponentConnected] = useState(true);
@@ -228,6 +234,7 @@ export default function GamePage() {
   const handleToggleDefinition = async (word: string) => {
     const clean = word.trim().toLowerCase();
     if (!clean) return;
+    setDefinitionPaused(false);
     if (!definitionHintSeen) {
       setDefinitionHintSeen(true);
       try {
@@ -2014,7 +2021,13 @@ export default function GamePage() {
                   <p className="text-xs text-zinc-500 text-center mt-2">Tap a word to see its meaning</p>
                 )}
                 {activeDefinition && (
-                  <div className="mt-2 pt-2 border-t border-zinc-800 text-left">
+                  <div
+                    className="mt-2 pt-2 border-t border-zinc-800 text-left"
+                    onPointerEnter={() => setDefinitionPaused(true)}
+                    onPointerLeave={() => setDefinitionPaused(false)}
+                    onPointerDown={() => setDefinitionPaused(true)}
+                    onPointerUp={(e) => e.pointerType !== "mouse" && setDefinitionPaused(false)}
+                  >
                     <div className="flex items-center justify-between gap-2 mb-1">
                       <div className="flex items-center gap-2">
                         <span className="font-semibold text-white capitalize text-sm">{activeDefinition.word}</span>
@@ -2026,6 +2039,24 @@ export default function GamePage() {
                       </button>
                     </div>
                     <p className="text-zinc-300 text-sm leading-relaxed max-h-20 overflow-y-auto">{activeDefinition.definition}</p>
+                    {/* Auto-dismiss countdown: longer definitions stay up longer; pressing/hovering pauses it */}
+                    {!activeDefinition.loading && (
+                      <div className="mt-2 h-0.5 bg-zinc-800 rounded-full overflow-hidden" aria-hidden="true">
+                        <div
+                          key={activeDefinition.word}
+                          className="h-full rounded-full animate-countdown"
+                          style={{
+                            background: "var(--accent)",
+                            animationDuration: `${definitionDisplayMs(activeDefinition.definition)}ms`,
+                            animationPlayState: definitionPaused ? "paused" : "running",
+                          }}
+                          onAnimationEnd={() => {
+                            setActiveDefinition(null);
+                            setDefinitionPaused(false);
+                          }}
+                        ></div>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

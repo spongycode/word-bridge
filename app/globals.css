@@ -68,3 +68,15 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .animate-pop-in, .animate-shake, .animate-rise-in { animation: none; }
 }
+
+/* Shrinking strip for auto-dismissing panels (duration set inline) */
+@keyframes countdown {
+  from { transform: scaleX(1); }
+  to { transform: scaleX(0); }
+}
+.animate-countdown {
+  transform-origin: left;
+  animation-name: countdown;
+  animation-timing-function: linear;
+  animation-fill-mode: forwards;
+}
