@@ -69,6 +69,9 @@ export default function GamePage() {
   // Live pressure from the opponent: typing indicator and a brief flash when they miss or land a step
   const [opponentTyping, setOpponentTyping] = useState(false);
   const [opponentPulse, setOpponentPulse] = useState<{ kind: "miss" | "step"; key: number } | null>(null);
+  // On-screen keyboard open + input focused -> compact game layout so the path stays visible
+  const [keyboardOpen, setKeyboardOpen] = useState(false);
+  const [inputFocused, setInputFocused] = useState(false);
 
   // Game state
   const [targetPair, setTargetPair] = useState<WordPair | null>(null);
@@ -1285,6 +1288,24 @@ export default function GamePage() {
   const currentWord = history.length > 0 ? history[history.length - 1].word : "";
   const targetWord = targetPair?.target || "";
 
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    let width = window.innerWidth;
+    let tallest = vv.height;
+    const onResize = () => {
+      if (Math.abs(window.innerWidth - width) > 50) {
+        // Rotation or window resize: start measuring again
+        width = window.innerWidth;
+        tallest = vv.height;
+      }
+      tallest = Math.max(tallest, vv.height);
+      setKeyboardOpen(vv.height < tallest * 0.8);
+    };
+    vv.addEventListener("resize", onResize);
+    return () => vv.removeEventListener("resize", onResize);
+  }, []);
+
   const scrollToBottom = useCallback((smooth = false) => {
     if (scrollRef.current) {
       scrollRef.current.scrollTo({
@@ -1307,6 +1328,12 @@ export default function GamePage() {
   useEffect(() => {
     historyRef.current = history;
   }, [history]);
+
+  // Layout changes when the keyboard opens/closes; keep the latest word in view
+  useEffect(() => {
+    const t = setTimeout(() => scrollToBottom(false), 60);
+    return () => clearTimeout(t);
+  }, [keyboardOpen, inputFocused, scrollToBottom]);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const sanitized = e.target.value.replace(/[^a-zA-Z]/g, "");
@@ -1960,6 +1987,8 @@ export default function GamePage() {
   const modeLabel =
     gameType === "daily" ? (dailyDay ? `Daily #${dailyNumber(dailyDay)}` : "Daily") : gameType === "peer" ? `Race vs ${opponent?.name ?? "…"}` : "Practice";
   const canGiveUp = gameType !== "peer" && !isGameOver && !loadingPair && Boolean(targetPair);
+  const compact = keyboardOpen && inputFocused && !isGameOver;
+  const opponentCloseness = opponent ? (opponent.hasWon ? 100 : opponent.proximity ?? targetPair?.baselineScore ?? 0) : 0;
   const gameOverTitle = gaveUp
     ? "You gave up"
     : gameType === "peer"
@@ -2125,7 +2154,8 @@ export default function GamePage() {
                 </div>
         </div>
       )}
-      {/* Header (shrink-0) */}
+      {/* Header (shrink-0); hidden while typing on a phone keyboard */}
+      {!compact && (
       <header className="w-full max-w-xl flex items-center justify-between gap-2 py-1.5 sm:py-2 border-b border-zinc-800/40 mb-2 sm:mb-3 shrink-0">
         <div className="flex items-center gap-3 min-w-0">
           <button onClick={goHome} className="text-sm text-zinc-400 hover:text-white transition-colors shrink-0">
@@ -2142,9 +2172,14 @@ export default function GamePage() {
           {helpButton}
         </div>
       </header>
+      )}
 
       {/* Main Game Container */}
-      <main className="w-full max-w-xl flex-1 flex flex-col justify-between bg-zinc-950 border border-zinc-800/40 rounded-xl sm:rounded-2xl p-3 sm:p-5 shadow-xl relative min-h-0 overflow-hidden">
+      <main
+        className={`w-full max-w-xl flex-1 flex flex-col justify-between bg-zinc-950 border border-zinc-800/40 rounded-xl sm:rounded-2xl shadow-xl relative min-h-0 overflow-hidden ${
+          compact ? "p-2" : "p-3 sm:p-5"
+        }`}
+      >
         {pairError ? (
           <div className="flex-1 flex flex-col items-center justify-center min-h-0 space-y-3 text-center">
             <p className="text-sm text-rose-400">{pairError}</p>
@@ -2163,11 +2198,11 @@ export default function GamePage() {
         ) : (
           <>
             {/* Top pinned block: Opponent + Goal Card + Closeness (shrink-0) */}
-            <div className="shrink-0 space-y-2 mb-2">
+            <div className={`shrink-0 mb-2 ${compact ? "space-y-1.5" : "space-y-2"}`}>
               {gameType === "peer" && opponent && (
                 <div
                   key={opponentPulse?.key ?? "idle"}
-                  className={`p-2.5 bg-zinc-900 border rounded-xl space-y-1.5 transition-colors ${
+                  className={`${compact ? "px-2.5 py-1.5" : "p-2.5"} bg-zinc-900 border rounded-xl space-y-1.5 transition-colors ${
                     opponentPulse?.kind === "step"
                       ? "border-rose-500/80 animate-flash-rose"
                       : opponentPulse?.kind === "miss"
@@ -2206,7 +2241,7 @@ export default function GamePage() {
                       )}
                     </span>
                   </div>
-                  {opponent.steps.length > 0 && (
+                  {!compact && opponent.steps.length > 0 && (
                     <div className="flex items-center gap-1.5 overflow-x-auto">
                       {opponent.steps.map((st, i) => (
                         <span
@@ -2222,6 +2257,29 @@ export default function GamePage() {
                 </div>
               )}
 
+              {compact ? (
+                /* Keyboard open: start -> target and both closeness values in one slim bar */
+                <div className="px-3 py-2 bg-zinc-900/40 border border-zinc-800/40 rounded-xl flex items-center justify-between gap-2 text-sm">
+                  <span className="min-w-0 truncate">
+                    <b className="capitalize text-white">{targetPair.source}</b>
+                    <span className="text-zinc-500"> → </span>
+                    <b className="capitalize text-white">{targetPair.target}</b>
+                  </span>
+                  <span className="shrink-0 flex items-center gap-2.5 text-xs font-mono font-semibold">
+                    <span className="flex items-center gap-1" style={{ color: "var(--accent)" }}>
+                      <span className="w-2 h-2 rounded-full" style={{ background: "var(--accent)" }}></span>
+                      {targetProximity}%
+                    </span>
+                    {gameType === "peer" && opponent && (
+                      <span className="flex items-center gap-1" style={{ color: "var(--opponent)" }}>
+                        <span className="w-2 h-2 rounded-full" style={{ background: "var(--opponent)" }}></span>
+                        {opponentCloseness}%
+                      </span>
+                    )}
+                  </span>
+                </div>
+              ) : (
+              <>
               {/* Start → Target */}
               <div className="bg-zinc-900/40 border border-zinc-800/40 rounded-xl p-2.5 sm:p-3.5">
                 <div className="flex items-center justify-between gap-2 sm:gap-3">
@@ -2296,16 +2354,14 @@ export default function GamePage() {
               <ClosenessGauge
                 value={targetProximity}
                 delta={proximityDelta}
-                opponent={
-                  gameType === "peer" && opponent
-                    ? { name: opponent.name, value: opponent.hasWon ? 100 : opponent.proximity ?? targetPair.baselineScore ?? 0 }
-                    : null
-                }
+                opponent={gameType === "peer" && opponent ? { name: opponent.name, value: opponentCloseness } : null}
               />
+              </>
+              )}
             </div>
 
             {/* Middle: path (flex-1 min-h-0 overflow-y-auto) */}
-            <div className="shrink-0 flex items-center justify-between text-xs text-zinc-400 mb-1.5">
+            <div className={`shrink-0 flex items-center justify-between text-xs text-zinc-400 mb-1.5 ${compact ? "hidden" : ""}`}>
                 <span>
                   Your path · {Math.max(0, history.length - 1)} {history.length - 1 === 1 ? "step" : "steps"}
                 </span>
@@ -2356,7 +2412,9 @@ export default function GamePage() {
                       placeholder={`A word related to "${currentWord}"`}
                       value={nextWord}
                       onChange={handleInputChange}
+                      onBlur={() => setInputFocused(false)}
                       onFocus={() => {
+                        setInputFocused(true);
                         if (typeof window !== "undefined") {
                           setTimeout(() => window.scrollTo(0, 0), 30);
                         }
