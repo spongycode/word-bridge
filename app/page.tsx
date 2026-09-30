@@ -2201,7 +2201,6 @@ export default function GamePage() {
                       ) : (
                         <>
                           {`${opponent.steps.length} ${opponent.steps.length === 1 ? "step" : "steps"}`}
-                          {(opponent.misses ?? 0) > 0 && <span className="text-zinc-500">· {opponent.misses} missed</span>}
                           {opponent.hasWon && " · finished"}
                         </>
                       )}
