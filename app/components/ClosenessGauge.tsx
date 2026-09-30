@@ -10,6 +10,8 @@ const CX = 100;
 const CY = 100;
 const R = 80;
 const CONNECT_AT = 70; // auto-connect threshold
+// Pink (--opponent): distinct from your violet and the green/yellow/orange link tiers
+const OPPONENT_COLOR = "var(--opponent)";
 
 // Point on the half circle: 0% = far left, 100% = far right
 function polar(pct: number, radius = R) {
@@ -26,7 +28,7 @@ function arc(from: number, to: number, radius = R) {
 // Rotation for a needle drawn pointing straight up (50%)
 const needleRotation = (pct: number) => (Math.min(100, Math.max(0, pct)) / 100) * 180 - 90;
 
-// Semicircle meter with a spring-y needle; a second thin needle tracks the opponent in races
+// Semicircle meter with a spring-y needle; in races a pink needle + rim marker tracks the opponent
 export default function ClosenessGauge({ value, delta, opponent }: ClosenessGaugeProps) {
   const ticks = [0, 25, 50, 75, 100];
 
@@ -51,10 +53,11 @@ export default function ClosenessGauge({ value, delta, opponent }: ClosenessGaug
           return <line key={t} x1={outer.x} y1={outer.y} x2={inner.x} y2={inner.y} stroke="#52525b" strokeWidth="3" />;
         })}
 
-        {/* Opponent needle (thin, behind yours) */}
+        {/* Opponent: solid pink needle (behind yours) plus a marker on the rim, visible even when needles overlap */}
         {opponent && (
           <g style={{ transform: `rotate(${needleRotation(opponent.value)}deg)`, transformOrigin: `${CX}px ${CY}px`, transition: "transform 700ms cubic-bezier(.34,1.56,.64,1)" }}>
-            <line x1={CX} y1={CY} x2={CX} y2={CY - R + 14} stroke="#e4e4e7" strokeOpacity="0.8" strokeWidth="4" strokeLinecap="round" strokeDasharray="8 6" />
+            <path d={`M ${CX - 5} ${CY} L ${CX} ${CY - R + 18} L ${CX + 5} ${CY} Z`} fill={OPPONENT_COLOR} />
+            <circle cx={CX} cy={CY - R} r="11" fill={OPPONENT_COLOR} stroke="#09090b" strokeWidth="4" />
           </g>
         )}
 
@@ -76,9 +79,17 @@ export default function ClosenessGauge({ value, delta, opponent }: ClosenessGaug
           </span>
         </div>
         {opponent ? (
-          <div className="text-xs text-zinc-400 truncate">
-            <span className="inline-block w-3 border-t-2 border-dashed border-zinc-300 align-middle mr-1.5"></span>
-            {opponent.name} <span className="font-mono text-zinc-200">{opponent.value}%</span>
+          <div className="flex items-center justify-between gap-2 text-xs">
+            <span className="flex items-center gap-1.5 min-w-0">
+              <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: OPPONENT_COLOR }}></span>
+              <span className="truncate font-medium" style={{ color: OPPONENT_COLOR }}>
+                {opponent.name}
+              </span>
+              <span className="font-mono font-semibold text-zinc-100">{opponent.value}%</span>
+            </span>
+            <span className={`shrink-0 font-medium ${opponent.value > value ? "text-rose-300" : opponent.value < value ? "text-emerald-400" : "text-zinc-400"}`}>
+              {opponent.value > value ? `ahead by ${opponent.value - value}` : opponent.value < value ? `you lead by ${value - opponent.value}` : "tied"}
+            </span>
           </div>
         ) : (
           <div className="text-xs text-zinc-500">{CONNECT_AT}%+ connects automatically</div>

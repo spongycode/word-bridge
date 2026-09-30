@@ -2116,7 +2116,7 @@ export default function GamePage() {
                   <div className="flex items-center justify-between text-sm">
                     <span className="font-semibold text-zinc-200 flex items-center gap-2 min-w-0">
                       <span className={`w-2 h-2 rounded-full shrink-0 ${opponentConnected ? "bg-emerald-400" : "bg-zinc-600 animate-pulse"}`}></span>
-                      <span className="truncate">{opponent.name}</span>
+                      <span className="truncate" style={{ color: "var(--opponent)" }}>{opponent.name}</span>
                     </span>
                     <span className="text-zinc-400 text-xs shrink-0">
                       {opponentLeft
