@@ -117,6 +117,10 @@ export default function GamePage() {
 
   // Feature 2b: Peer Rematch
   const [rematchState, setRematchState] = useState<"idle" | "requested" | "starting">("idle");
+  // What the opponent is doing at game over: asked for a rematch, or left the room
+  const [opponentWantsRematch, setOpponentWantsRematch] = useState(false);
+  const [opponentLeft, setOpponentLeft] = useState(false);
+  const [rematchError, setRematchError] = useState<string | null>(null);
 
   const inputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -587,7 +591,10 @@ export default function GamePage() {
   const subscribeGameEvents = (channel: any) => {
     // Any message from the opponent proves they're in the room
     channel.subscribe((msg: any) => {
-      if (isOpponent(msg.clientId)) markOpponentConnected();
+      if (!isOpponent(msg.clientId)) return;
+      markOpponentConnected();
+      // They came back (e.g. resumed a race they'd exited)
+      if (msg.name !== "left") setOpponentLeft(false);
     });
 
     channel.subscribe("peer_step", (msg: any) => {
@@ -667,12 +674,24 @@ export default function GamePage() {
     channel.subscribe("rematch_request", (msg: any) => {
       if (!isOpponent(msg.clientId)) return;
       rematchOpponentRef.current = true;
+      setOpponentWantsRematch(true);
       maybeStartRematch();
     });
 
     channel.subscribe("rematch_cancel", (msg: any) => {
       if (!isOpponent(msg.clientId)) return;
       rematchOpponentRef.current = false;
+      setOpponentWantsRematch(false);
+    });
+
+    // Opponent went back to the menu or closed the tab: no rematch is coming
+    channel.subscribe("left", (msg: any) => {
+      if (!isOpponent(msg.clientId)) return;
+      rematchOpponentRef.current = false;
+      rematchRequestedRef.current = false;
+      setOpponentWantsRematch(false);
+      setOpponentLeft(true);
+      setRematchState("idle");
     });
 
     channel.subscribe("rematch_start", (msg: any) => {
@@ -707,6 +726,9 @@ export default function GamePage() {
     setProximityDelta(null);
     setResultDismissed(false);
     setShowScoreDetails(false);
+    setOpponentWantsRematch(false);
+    setOpponentLeft(false);
+    setRematchError(null);
     resetRace();
 
     persistSession({ history: initialHistory, hasWon: false, opponentWon: false, opponent: opp });
@@ -809,9 +831,13 @@ export default function GamePage() {
     };
   }, [user?.id, authLoading]);
 
-  // Leave the queue if the tab closes mid-search so nobody gets matched with a ghost
+  // Leave the queue if the tab closes mid-search so nobody gets matched with a ghost,
+  // and tell a 1v1 opponent we're gone so they aren't left waiting on a rematch
   useEffect(() => {
     const onPageHide = () => {
+      try {
+        if (ablyChannelRef.current && opponentRef.current) ablyChannelRef.current.publish("left", { round: roundRef.current });
+      } catch {}
       if (!searchingRef.current || !myIdRef.current) return;
       const payload = JSON.stringify({ clientId: myIdRef.current, action: "leave" });
       navigator.sendBeacon?.("/api/matchmaking", new Blob([payload], { type: "application/json" }));
@@ -1126,9 +1152,11 @@ export default function GamePage() {
 
   const maybeStartRematch = async () => {
     if (!rematchRequestedRef.current || !rematchOpponentRef.current || rematchStartedRef.current) return;
+    // The challenger just waits for the host's fresh pair (stays retryable if the host fails)
+    if (!isHostRef.current) return;
     rematchStartedRef.current = true;
-    if (!isHostRef.current) return; // challenger waits for the host to share a fresh pair
 
+    setRematchError(null);
     setRematchState("starting");
     try {
       const res = await fetch("/api/pair");
@@ -1141,8 +1169,11 @@ export default function GamePage() {
     } catch (err: any) {
       console.error("Failed to load rematch pair:", err);
       rematchStartedRef.current = false;
-      setRematchState("requested");
-      setFeedback({ type: "error", message: err?.message || "Failed to start rematch. Please try again." });
+      rematchRequestedRef.current = false;
+      setRematchState("idle");
+      setRematchError(err?.message || "Couldn't start the rematch. Tap Rematch to try again.");
+      // Our request is withdrawn; the opponent's stays, so tapping again retries straight away
+      ablyChannelRef.current?.publish("rematch_cancel", {});
     }
   };
 
@@ -1152,19 +1183,20 @@ export default function GamePage() {
     // Second tap on the pending button cancels the request
     if (rematchRequestedRef.current) {
       rematchRequestedRef.current = false;
-      rematchOpponentRef.current = false;
       setRematchState("idle");
       ablyChannelRef.current.publish("rematch_cancel", {});
       return;
     }
 
     rematchRequestedRef.current = true;
+    setRematchError(null);
     setRematchState("requested");
     ablyChannelRef.current.publish("rematch_request", {});
     maybeStartRematch();
   };
 
   const goHome = () => {
+    if (gameType === "peer") ablyChannelRef.current?.publish("left", { round: roundRef.current });
     cancelSearch();
     if (presenceTimeoutRef.current) {
       clearTimeout(presenceTimeoutRef.current);
@@ -1969,6 +2001,22 @@ export default function GamePage() {
                     </div>
                   )}
 
+                  {gameType === "peer" && (opponentLeft || opponentWantsRematch || rematchState === "requested" || rematchError) && (
+                    <p
+                      role="status"
+                      className={`text-sm ${rematchError || opponentLeft ? "text-rose-300" : opponentWantsRematch ? "text-emerald-300" : "text-zinc-400"}`}
+                    >
+                      {rematchError
+                        ? rematchError
+                        : opponentLeft
+                        ? `${opponent?.name ?? "Your opponent"} left the room.`
+                        : opponentWantsRematch && rematchState !== "requested"
+                        ? `${opponent?.name ?? "Your opponent"} wants a rematch!`
+                        : opponentWantsRematch
+                        ? "Both ready. Picking new words…"
+                        : `Waiting for ${opponent?.name ?? "your opponent"} to accept…`}
+                    </p>
+                  )}
                   <div className="flex gap-2">
                     {finalScore && !gaveUp && (
                       <button onClick={shareResult} className="flex-1 py-2.5 bg-white text-black font-semibold rounded-xl text-sm hover:bg-zinc-200 transition-colors">
@@ -1978,12 +2026,24 @@ export default function GamePage() {
                     {gameType === "peer" ? (
                       <button
                         onClick={requestRematch}
-                        disabled={rematchState === "starting"}
-                        className={`flex-1 py-2.5 font-semibold rounded-xl text-sm transition-colors ${
-                          rematchState === "idle" && !(finalScore && !gaveUp) ? "bg-white text-black hover:bg-zinc-200" : "bg-zinc-800 text-zinc-100 hover:bg-zinc-700 border border-zinc-700"
+                        disabled={rematchState === "starting" || opponentLeft}
+                        className={`flex-1 py-2.5 font-semibold rounded-xl text-sm transition-colors disabled:opacity-50 ${
+                          (opponentWantsRematch && rematchState === "idle") || (rematchState === "idle" && !(finalScore && !gaveUp))
+                            ? "bg-white text-black hover:bg-zinc-200"
+                            : "bg-zinc-800 text-zinc-100 hover:bg-zinc-700 border border-zinc-700"
                         }`}
                       >
-                        {rematchState === "idle" ? "Rematch" : rematchState === "requested" ? "Waiting for opponent…" : "Starting…"}
+                        {opponentLeft
+                          ? "Opponent left"
+                          : rematchState === "starting"
+                          ? "Starting…"
+                          : rematchState === "requested"
+                          ? opponentWantsRematch
+                            ? "Starting…"
+                            : "Waiting… (tap to cancel)"
+                          : opponentWantsRematch
+                          ? "Accept rematch"
+                          : "Rematch"}
                       </button>
                     ) : gameType === "daily" ? (
                       <button onClick={() => setView("leaderboard")} className="flex-1 py-2.5 bg-zinc-800 text-zinc-100 hover:bg-zinc-700 font-semibold rounded-xl text-sm transition-colors border border-zinc-700">
@@ -2059,7 +2119,9 @@ export default function GamePage() {
                       <span className="truncate">{opponent.name}</span>
                     </span>
                     <span className="text-zinc-400 text-xs shrink-0">
-                      {!opponentConnected
+                      {opponentLeft
+                        ? "Left the race"
+                        : !opponentConnected
                         ? "Connecting…"
                         : `${opponent.steps.length} ${opponent.steps.length === 1 ? "step" : "steps"}${opponent.hasWon ? " · finished" : ""}`}
                     </span>
