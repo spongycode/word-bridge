@@ -19,6 +19,7 @@ export interface OpponentState {
   hasWon: boolean;
   finalHistory?: string[];
   proximity?: number; // opponent's latest closeness to the target (0-100)
+  misses?: number; // rejected words this round (broadcast so the pressure is visible)
 }
 
 export interface ActiveGameSession {

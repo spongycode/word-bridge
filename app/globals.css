@@ -66,8 +66,29 @@ body {
 .animate-shake { animation: shake 360ms ease-in-out; }
 .animate-rise-in { animation: rise-in 320ms ease-out both; }
 
+/* Opponent landed a step: rose glow on their bar */
+@keyframes flash-rose {
+  0% { box-shadow: 0 0 0 0 rgba(244, 63, 94, 0.55); }
+  60% { box-shadow: 0 0 0 6px rgba(244, 63, 94, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(244, 63, 94, 0); }
+}
+.animate-flash-rose { animation: flash-rose 900ms ease-out 2; }
+
+/* "typing…" dots */
+.typing-dots { display: inline-flex; gap: 2px; }
+.typing-dots span {
+  width: 3px; height: 3px; border-radius: 9999px; background: currentColor;
+  animation: typing-bounce 1s infinite ease-in-out;
+}
+.typing-dots span:nth-child(2) { animation-delay: 0.15s; }
+.typing-dots span:nth-child(3) { animation-delay: 0.3s; }
+@keyframes typing-bounce {
+  0%, 80%, 100% { opacity: 0.3; transform: translateY(0); }
+  40% { opacity: 1; transform: translateY(-2px); }
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .animate-pop-in, .animate-shake, .animate-rise-in { animation: none; }
+  .animate-pop-in, .animate-shake, .animate-rise-in, .animate-flash-rose, .typing-dots span { animation: none; }
 }
 
 /* Shrinking strip for auto-dismissing panels (duration set inline) */

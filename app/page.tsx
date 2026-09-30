@@ -66,6 +66,9 @@ export default function GamePage() {
   const [searching, setSearching] = useState(false);
   const [opponentConnected, setOpponentConnected] = useState(true);
   const [pendingInvite, setPendingInvite] = useState<RaceInvite | null>(null);
+  // Live pressure from the opponent: typing indicator and a brief flash when they miss or land a step
+  const [opponentTyping, setOpponentTyping] = useState(false);
+  const [opponentPulse, setOpponentPulse] = useState<{ kind: "miss" | "step"; key: number } | null>(null);
 
   // Game state
   const [targetPair, setTargetPair] = useState<WordPair | null>(null);
@@ -154,6 +157,10 @@ export default function GamePage() {
   const goneCountRef = useRef(0);
   const inboxRef = useRef<any>(null);
   const opponentConnectedRef = useRef(true);
+  const typingSentAtRef = useRef(0);
+  const typingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pulseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const failedAttemptsRef = useRef(0);
 
   // Word definition tooltip/card state
   const [activeDefinition, setActiveDefinition] = useState<{
@@ -578,6 +585,25 @@ export default function GamePage() {
 
   // Single set of in-game handlers shared by host, guest, and resumed sessions.
   // msg.clientId is stamped by Ably from the server-issued token, so it can't be spoofed.
+  useEffect(() => {
+    failedAttemptsRef.current = failedAttempts;
+  }, [failedAttempts]);
+
+  // Short vibration on phones that support it (Android); iOS browsers ignore this
+  const buzz = (pattern: number | number[]) => {
+    try {
+      if (document.visibilityState === "visible") navigator.vibrate?.(pattern);
+    } catch {}
+  };
+
+  const flashOpponent = (kind: "miss" | "step") => {
+    setOpponentTyping(false);
+    setOpponentPulse({ kind, key: Date.now() });
+    if (pulseTimerRef.current) clearTimeout(pulseTimerRef.current);
+    pulseTimerRef.current = setTimeout(() => setOpponentPulse(null), 1400);
+    buzz(kind === "step" ? [70, 40, 70] : 25);
+  };
+
   const markOpponentConnected = () => {
     if (opponentConnectedRef.current) return;
     opponentConnectedRef.current = true;
@@ -616,6 +642,8 @@ export default function GamePage() {
         if (d.hasWon) {
           opponentWonRef.current = true;
           setOpponentWon(true);
+        } else {
+          flashOpponent("step");
         }
         persistSession();
       }
@@ -623,6 +651,21 @@ export default function GamePage() {
       // Ably delivers channel messages in the same order to everyone (including our own echo),
       // so the first win message seen decides the race identically on both clients.
       if (d.hasWon) settleRace(isMine ? "me" : "opponent", isMine ? undefined : d.finalHistory);
+    });
+
+    // Opponent is typing (throttled on their side); clears itself after a pause
+    channel.subscribe("typing", (msg: any) => {
+      if (msg.data.round !== roundRef.current || !isOpponent(msg.clientId)) return;
+      setOpponentTyping(true);
+      if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
+      typingTimerRef.current = setTimeout(() => setOpponentTyping(false), 3500);
+    });
+
+    // Opponent submitted a word that was rejected
+    channel.subscribe("attempt", (msg: any) => {
+      if (msg.data.round !== roundRef.current || !isOpponent(msg.clientId)) return;
+      updateOpponent({ misses: (opponentRef.current?.misses ?? 0) + 1 });
+      flashOpponent("miss");
     });
 
     channel.subscribe("reveal_path", (msg: any) => {
@@ -644,6 +687,7 @@ export default function GamePage() {
         steps: historyRef.current.slice(1).map((s, i) => ({ step: i + 1, relatedness: s.relatednessToPrevious })),
         hasWon: hasWonRef.current,
         proximity: hasWonRef.current ? 100 : targetProximityRef.current,
+        misses: failedAttemptsRef.current,
         finalHistory: winner || hasWonRef.current ? historyRef.current.map((s) => s.word) : undefined,
         raceWinnerId: winner === "me" ? myIdRef.current : winner === "opponent" ? opp?.clientId : null,
       });
@@ -659,6 +703,7 @@ export default function GamePage() {
         hasWon: d.hasWon,
         finalHistory: d.finalHistory ?? opponentRef.current?.finalHistory,
         proximity: typeof d.proximity === "number" ? d.proximity : opponentRef.current?.proximity,
+        misses: typeof d.misses === "number" ? d.misses : opponentRef.current?.misses,
       });
       if (d.hasWon) {
         opponentWonRef.current = true;
@@ -729,6 +774,8 @@ export default function GamePage() {
     setOpponentWantsRematch(false);
     setOpponentLeft(false);
     setRematchError(null);
+    setOpponentTyping(false);
+    setOpponentPulse(null);
     resetRace();
 
     persistSession({ history: initialHistory, hasWon: false, opponentWon: false, opponent: opp });
@@ -1265,6 +1312,11 @@ export default function GamePage() {
     const sanitized = e.target.value.replace(/[^a-zA-Z]/g, "");
     setNextWord(sanitized);
     if (feedback) setFeedback(null);
+    // Let the opponent see we're typing (at most one message every 3s)
+    if (gameType === "peer" && sanitized && Date.now() - typingSentAtRef.current > 3000) {
+      typingSentAtRef.current = Date.now();
+      ablyChannelRef.current?.publish("typing", { round: roundRef.current });
+    }
   };
 
   const candidateLower = nextWord.trim().toLowerCase();
@@ -1366,6 +1418,7 @@ export default function GamePage() {
       if (pct < STEP_THRESHOLD) {
         triggerShake();
         setFailedAttempts((prev) => prev + 1);
+        if (gameType === "peer") ablyChannelRef.current?.publish("attempt", { round: roundRef.current });
         setFeedback({
           type: "warning",
           message: `Not close enough to "${currentWord}" (needs 70%)`,
@@ -2112,18 +2165,46 @@ export default function GamePage() {
             {/* Top pinned block: Opponent + Goal Card + Closeness (shrink-0) */}
             <div className="shrink-0 space-y-2 mb-2">
               {gameType === "peer" && opponent && (
-                <div className="p-2.5 bg-zinc-900 border border-zinc-800 rounded-xl space-y-1.5">
+                <div
+                  key={opponentPulse?.key ?? "idle"}
+                  className={`p-2.5 bg-zinc-900 border rounded-xl space-y-1.5 transition-colors ${
+                    opponentPulse?.kind === "step"
+                      ? "border-rose-500/80 animate-flash-rose"
+                      : opponentPulse?.kind === "miss"
+                      ? "border-rose-900/80 animate-shake"
+                      : "border-zinc-800"
+                  }`}
+                >
                   <div className="flex items-center justify-between text-sm">
                     <span className="font-semibold text-zinc-200 flex items-center gap-2 min-w-0">
                       <span className={`w-2 h-2 rounded-full shrink-0 ${opponentConnected ? "bg-emerald-400" : "bg-zinc-600 animate-pulse"}`}></span>
                       <span className="truncate" style={{ color: "var(--opponent)" }}>{opponent.name}</span>
                     </span>
-                    <span className="text-zinc-400 text-xs shrink-0">
-                      {opponentLeft
-                        ? "Left the race"
-                        : !opponentConnected
-                        ? "Connecting…"
-                        : `${opponent.steps.length} ${opponent.steps.length === 1 ? "step" : "steps"}${opponent.hasWon ? " · finished" : ""}`}
+                    <span className="text-zinc-400 text-xs shrink-0 flex items-center gap-1.5">
+                      {opponentLeft ? (
+                        "Left the race"
+                      ) : !opponentConnected ? (
+                        "Connecting…"
+                      ) : opponentPulse?.kind === "miss" ? (
+                        <span className="text-rose-300 font-medium">✗ missed a word</span>
+                      ) : opponentPulse?.kind === "step" ? (
+                        <span className="text-rose-300 font-semibold">+1 step!</span>
+                      ) : opponentTyping && !opponent.hasWon ? (
+                        <span className="flex items-center gap-1 text-zinc-300">
+                          typing
+                          <span className="typing-dots" aria-hidden="true">
+                            <span></span>
+                            <span></span>
+                            <span></span>
+                          </span>
+                        </span>
+                      ) : (
+                        <>
+                          {`${opponent.steps.length} ${opponent.steps.length === 1 ? "step" : "steps"}`}
+                          {(opponent.misses ?? 0) > 0 && <span className="text-zinc-500">· {opponent.misses} missed</span>}
+                          {opponent.hasWon && " · finished"}
+                        </>
+                      )}
                     </span>
                   </div>
                   {opponent.steps.length > 0 && (
