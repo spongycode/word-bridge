@@ -31,16 +31,16 @@ export default function ClosenessGauge({ value, delta, opponent }: ClosenessGaug
   const ticks = [0, 25, 50, 75, 100];
 
   return (
-    <div className="px-3 pt-2 pb-1.5 bg-zinc-900/40 border border-zinc-800/30 rounded-xl flex items-center gap-3">
-      <svg viewBox="0 0 200 112" className="w-40 sm:w-48 shrink-0" role="img" aria-label={`Closeness to target ${value}%`}>
+    <div className="px-3 py-1.5 bg-zinc-900/40 border border-zinc-800/30 rounded-xl flex items-center gap-3">
+      <svg viewBox="6 8 188 106" className="w-[76px] sm:w-24 shrink-0" role="img" aria-label={`Closeness to target ${value}%`}>
         {/* Track and the connect zone */}
-        <path d={arc(0, 100)} stroke="#27272a" strokeWidth="12" fill="none" strokeLinecap="round" />
-        <path d={arc(CONNECT_AT, 100)} stroke="#10b981" strokeOpacity="0.35" strokeWidth="12" fill="none" strokeLinecap="round" />
+        <path d={arc(0, 100)} stroke="#27272a" strokeWidth="16" fill="none" strokeLinecap="round" />
+        <path d={arc(CONNECT_AT, 100)} stroke="#10b981" strokeOpacity="0.35" strokeWidth="16" fill="none" strokeLinecap="round" />
         {/* Filled progress to your value */}
         <path
           d={arc(0, Math.max(0.5, value))}
           stroke="var(--accent)"
-          strokeWidth="12"
+          strokeWidth="16"
           fill="none"
           strokeLinecap="round"
           style={{ transition: "d 600ms ease" }}
@@ -48,32 +48,32 @@ export default function ClosenessGauge({ value, delta, opponent }: ClosenessGaug
         {ticks.map((t) => {
           const outer = polar(t, R - 10);
           const inner = polar(t, R - 17);
-          return <line key={t} x1={outer.x} y1={outer.y} x2={inner.x} y2={inner.y} stroke="#52525b" strokeWidth="1.5" />;
+          return <line key={t} x1={outer.x} y1={outer.y} x2={inner.x} y2={inner.y} stroke="#52525b" strokeWidth="3" />;
         })}
 
         {/* Opponent needle (thin, behind yours) */}
         {opponent && (
           <g style={{ transform: `rotate(${needleRotation(opponent.value)}deg)`, transformOrigin: `${CX}px ${CY}px`, transition: "transform 700ms cubic-bezier(.34,1.56,.64,1)" }}>
-            <line x1={CX} y1={CY} x2={CX} y2={CY - R + 14} stroke="#e4e4e7" strokeOpacity="0.8" strokeWidth="2" strokeLinecap="round" strokeDasharray="4 3" />
+            <line x1={CX} y1={CY} x2={CX} y2={CY - R + 14} stroke="#e4e4e7" strokeOpacity="0.8" strokeWidth="4" strokeLinecap="round" strokeDasharray="8 6" />
           </g>
         )}
 
         {/* Your needle */}
         <g style={{ transform: `rotate(${needleRotation(value)}deg)`, transformOrigin: `${CX}px ${CY}px`, transition: "transform 700ms cubic-bezier(.34,1.56,.64,1)" }}>
-          <path d={`M ${CX - 4} ${CY} L ${CX} ${CY - R + 12} L ${CX + 4} ${CY} Z`} fill="var(--accent)" />
+          <path d={`M ${CX - 7} ${CY} L ${CX} ${CY - R + 10} L ${CX + 7} ${CY} Z`} fill="var(--accent)" />
         </g>
-        <circle cx={CX} cy={CY} r="7" fill="#18181b" stroke="var(--accent)" strokeWidth="3" />
+        <circle cx={CX} cy={CY} r="10" fill="#18181b" stroke="var(--accent)" strokeWidth="5" />
 
-        <text x={polar(0, R + 2).x + 2} y={CY + 11} fontSize="10" fill="#71717a">0</text>
-        <text x={polar(100, R + 2).x - 14} y={CY + 11} fontSize="10" fill="#71717a">100</text>
       </svg>
 
-      <div className="min-w-0 flex-1 space-y-1">
-        <div className="text-xs text-zinc-400">Closeness to target</div>
-        <div className="flex items-baseline gap-2">
-          <span className="text-2xl font-bold font-mono text-white">{value}%</span>
-          {delta === "hotter" && <span className="text-sm text-emerald-400">↑ warmer</span>}
-          {delta === "colder" && <span className="text-sm text-sky-400">↓ colder</span>}
+      <div className="min-w-0 flex-1">
+        <div className="flex items-baseline justify-between gap-2">
+          <span className="text-xs text-zinc-400 truncate">Closeness to target</span>
+          <span className="shrink-0">
+            {delta === "hotter" && <span className="text-xs text-emerald-400 mr-1.5">↑ warmer</span>}
+            {delta === "colder" && <span className="text-xs text-sky-400 mr-1.5">↓ colder</span>}
+            <span className="text-lg font-bold font-mono text-white">{value}%</span>
+          </span>
         </div>
         {opponent ? (
           <div className="text-xs text-zinc-400 truncate">
