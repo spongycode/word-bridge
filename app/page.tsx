@@ -26,7 +26,10 @@ import DailyLeaderboard from "./components/DailyLeaderboard";
 import RulesSheet from "./components/RulesSheet";
 import StatsCard from "./components/StatsCard";
 import Countdown from "./components/Countdown";
-import { buildShareText, dailyNumber } from "./lib/share";
+import { buildShareText, dailyNumber, linkSquares } from "./lib/share";
+import { linkTier, TIER_STYLES } from "./lib/links";
+import BridgePath from "./components/BridgePath";
+import Logo from "./components/Logo";
 
 const STEP_THRESHOLD = 70;
 
@@ -47,6 +50,11 @@ export default function GamePage() {
   const [showRules, setShowRules] = useState(false);
   const [firstVisit, setFirstVisit] = useState(false);
   const [showScoreDetails, setShowScoreDetails] = useState(false);
+  // Full-screen result can be dismissed to look at the board again
+  const [resultDismissed, setResultDismissed] = useState(false);
+  const [shakeInput, setShakeInput] = useState(false);
+  const [dailyTeaser, setDailyTeaser] = useState<{ source: string; day: string } | null>(null);
+  const [definitionHintSeen, setDefinitionHintSeen] = useState(true);
   // Random matchmaking: "searching" while queued; opponentConnected once they appear in the room
   const [searching, setSearching] = useState(false);
   const [opponentConnected, setOpponentConnected] = useState(true);
@@ -144,6 +152,7 @@ export default function GamePage() {
 
     // First visit: show the rules once
     try {
+      setDefinitionHintSeen(Boolean(localStorage.getItem("wordbridge_seen_definition")));
       if (!localStorage.getItem("wordbridge_seen_rules")) {
         setFirstVisit(true);
         setShowRules(true);
@@ -182,6 +191,15 @@ export default function GamePage() {
     };
   }, []);
 
+  // Home teaser: today's start word (the target is revealed when you play)
+  useEffect(() => {
+    if (view !== "home" || dailyTeaser) return;
+    fetch("/api/daily")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => data?.puzzle && setDailyTeaser({ source: data.puzzle.source, day: data.puzzle.day }))
+      .catch(() => {});
+  }, [view, dailyTeaser]);
+
   // Deep-link join: ?join=CODE in the URL auto-starts the room join flow
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -205,6 +223,12 @@ export default function GamePage() {
   const handleToggleDefinition = async (word: string) => {
     const clean = word.trim().toLowerCase();
     if (!clean) return;
+    if (!definitionHintSeen) {
+      setDefinitionHintSeen(true);
+      try {
+        localStorage.setItem("wordbridge_seen_definition", "1");
+      } catch {}
+    }
 
     if (activeDefinition?.word === clean && !activeDefinition.loading) {
       setActiveDefinition(null);
@@ -309,6 +333,7 @@ export default function GamePage() {
     setGaveUp(false);
     setBestPath(null);
     setShowScoreDetails(false);
+    setResultDismissed(false);
     resetRace();
 
     try {
@@ -661,6 +686,8 @@ export default function GamePage() {
     setFailedAttempts(0);
     setCopied(false);
     setProximityDelta(null);
+    setResultDismissed(false);
+    setShowScoreDetails(false);
     resetRace();
 
     persistSession({ history: initialHistory, hasWon: false, opponentWon: false, opponent: opp });
@@ -1143,6 +1170,12 @@ export default function GamePage() {
 
   const currentStepCount = Math.max(0, history.length - 1);
 
+  const triggerShake = () => {
+    setShakeInput(false);
+    requestAnimationFrame(() => setShakeInput(true));
+    setTimeout(() => setShakeInput(false), 400);
+  };
+
   const updateProximity = (newProximityPct: number) => {
     if (newProximityPct > targetProximity) setProximityDelta("hotter");
     else if (newProximityPct < targetProximity) setProximityDelta("colder");
@@ -1175,6 +1208,7 @@ export default function GamePage() {
     if (pair) applyDailyRun(data.run as DailyRunState, pair);
 
     if (!data.accepted) {
+      triggerShake();
       setFeedback({
         type: "warning",
         message: `Not close enough to "${currentWord}" (needs 70%)`,
@@ -1225,6 +1259,7 @@ export default function GamePage() {
       const proximity: number = data.proximity;
 
       if (pct < STEP_THRESHOLD) {
+        triggerShake();
         setFailedAttempts((prev) => prev + 1);
         setFeedback({
           type: "warning",
@@ -1379,7 +1414,9 @@ export default function GamePage() {
             {authError && <p className="text-sm text-rose-400 text-center">Sign-in failed. Please try again.</p>}
 
             <div className="text-center space-y-2 pt-2">
-              <h1 className="text-4xl font-semibold tracking-tight text-white">WordBridge</h1>
+              <h1>
+                <Logo />
+              </h1>
               <p className="text-base text-zinc-400">Get from one word to another, one related word at a time.</p>
             </div>
 
@@ -1415,7 +1452,15 @@ export default function GamePage() {
                 className="w-full p-4 bg-white text-black hover:bg-zinc-200 transition-colors rounded-2xl flex items-center justify-between text-left group"
               >
                 <div>
-                  <span className="font-semibold text-base block">Daily puzzle</span>
+                  <span className="font-semibold text-base block">
+                    Daily puzzle
+                    {dailyTeaser && <span className="font-normal text-zinc-500"> · #{dailyNumber(dailyTeaser.day)}</span>}
+                  </span>
+                  {dailyTeaser && (
+                    <span className="text-sm text-black block mt-1">
+                      <span className="font-semibold capitalize">{dailyTeaser.source}</span> → <span className="text-zinc-400">?</span>
+                    </span>
+                  )}
                   <span className="text-sm text-zinc-600 block mt-0.5">
                     {user ? "One ranked try a day. Keep your streak going." : "Same puzzle for everyone. Sign in to rank."}
                   </span>
@@ -1737,182 +1782,15 @@ export default function GamePage() {
   return (
     <div className="fixed inset-0 overflow-hidden bg-black text-zinc-100 flex flex-col items-center justify-between p-2 sm:p-4 selection:bg-zinc-800 selection:text-white">
       {rulesSheet}
-      {/* Header (shrink-0) */}
-      <header className="w-full max-w-xl flex items-center justify-between gap-2 py-1.5 sm:py-2 border-b border-zinc-800/40 mb-2 sm:mb-3 shrink-0">
-        <div className="flex items-center gap-3 min-w-0">
-          <button onClick={goHome} className="text-sm text-zinc-400 hover:text-white transition-colors shrink-0">
-            ← Exit
-          </button>
-          <span className="text-sm font-medium text-zinc-200 truncate">{modeLabel}</span>
-        </div>
-        <div className="flex items-center gap-2 shrink-0">
-          {canGiveUp && (
-            <button onClick={handleGiveUp} className="text-sm text-zinc-400 hover:text-white px-2 py-1 transition">
-              Give up
-            </button>
-          )}
-          {helpButton}
-        </div>
-      </header>
-
-      {/* Main Game Container */}
-      <main className="w-full max-w-xl flex-1 flex flex-col justify-between bg-zinc-950 border border-zinc-800/40 rounded-xl sm:rounded-2xl p-3 sm:p-5 shadow-xl relative min-h-0 overflow-hidden">
-        {pairError ? (
-          <div className="flex-1 flex flex-col items-center justify-center min-h-0 space-y-3 text-center">
-            <p className="text-sm text-rose-400">{pairError}</p>
-            <button
-              onClick={() => initGame(gameType === "daily" ? "daily" : "solo")}
-              className="px-5 py-2 bg-white text-black font-semibold rounded-xl text-sm hover:bg-zinc-200 transition-colors"
-            >
-              Retry
-            </button>
-          </div>
-        ) : loadingPair || !targetPair ? (
-          <div className="flex-1 flex flex-col items-center justify-center min-h-0 space-y-3">
-            <div className="w-6 h-6 border-2 border-zinc-700 border-t-white rounded-full animate-spin"></div>
-            <p className="text-sm text-zinc-400">Picking your words…</p>
-          </div>
-        ) : (
-          <>
-            {/* Top pinned block: Opponent + Goal Card + Closeness (shrink-0) */}
-            <div className="shrink-0 space-y-2 mb-2">
-              {gameType === "peer" && opponent && (
-                <div className="p-2.5 bg-zinc-900 border border-zinc-800 rounded-xl space-y-1.5">
-                  <div className="flex items-center justify-between text-sm">
-                    <span className="font-semibold text-zinc-200 flex items-center gap-2 min-w-0">
-                      <span className={`w-2 h-2 rounded-full shrink-0 ${opponentConnected ? "bg-emerald-400" : "bg-zinc-600 animate-pulse"}`}></span>
-                      <span className="truncate">{opponent.name}</span>
-                    </span>
-                    <span className="text-zinc-400 text-xs shrink-0">
-                      {!opponentConnected
-                        ? "Connecting…"
-                        : `${opponent.steps.length} ${opponent.steps.length === 1 ? "step" : "steps"}${opponent.hasWon ? " · finished" : ""}`}
-                    </span>
-                  </div>
-                  {opponent.steps.length > 0 && (
-                    <div className="flex items-center gap-1.5 overflow-x-auto">
-                      {opponent.steps.map((st, i) => (
-                        <span key={i} className="px-2 py-0.5 rounded-md text-xs font-mono border border-zinc-800 bg-zinc-950 text-zinc-300 shrink-0">
-                          {st.relatedness}%
-                        </span>
-                      ))}
-                      <span className="text-xs text-zinc-500 shrink-0 pl-1">words hidden</span>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Start → Target */}
-              <div className="bg-zinc-900/40 border border-zinc-800/40 rounded-xl p-2.5 sm:p-3.5">
-                <div className="flex items-center justify-between gap-2 sm:gap-3">
-                  {[
-                    { label: "Start", word: targetPair.source },
-                    { label: "Target", word: targetPair.target },
-                  ].map((card, i) => (
-                    <div key={card.label} className="contents">
-                      {i === 1 && <span className="text-base text-zinc-500 shrink-0">→</span>}
-                      <button
-                        type="button"
-                        onClick={() => handleToggleDefinition(card.word)}
-                        className={`flex-1 min-w-0 rounded-xl p-2 sm:p-2.5 text-center transition select-none border active:scale-[0.98] ${
-                          activeDefinition?.word === card.word.toLowerCase()
-                            ? "bg-zinc-900 border-zinc-600"
-                            : "bg-zinc-950/60 border-zinc-800/40 hover:border-zinc-700"
-                        }`}
-                        aria-label={`Definition of ${card.word}`}
-                      >
-                        <span className="text-xs text-zinc-400 block">{card.label} · tap for meaning</span>
-                        <span className="text-lg sm:text-xl font-bold tracking-tight text-white capitalize truncate block">{card.word}</span>
-                      </button>
-                    </div>
-                  ))}
-                </div>
-
-                {activeDefinition && (
-                  <div className="mt-2 pt-2 border-t border-zinc-800 text-left">
-                    <div className="flex items-center justify-between gap-2 mb-1">
-                      <div className="flex items-center gap-2">
-                        <span className="font-semibold text-white capitalize text-sm">{activeDefinition.word}</span>
-                        {activeDefinition.partOfSpeech && <span className="text-xs italic text-zinc-400">{activeDefinition.partOfSpeech}</span>}
-                        {activeDefinition.loading && <span className="w-3 h-3 border border-zinc-500 border-t-white rounded-full animate-spin"></span>}
-                      </div>
-                      <button type="button" onClick={() => setActiveDefinition(null)} className="text-zinc-500 hover:text-white text-sm px-1.5" aria-label="Close definition">
-                        ✕
-                      </button>
-                    </div>
-                    <p className="text-zinc-300 text-sm leading-relaxed max-h-20 overflow-y-auto">{activeDefinition.definition}</p>
-                  </div>
-                )}
-              </div>
-
-              {/* Closeness to target */}
-              <div className="px-3 sm:px-4 py-2 bg-zinc-900/40 border border-zinc-800/30 rounded-xl flex items-center justify-between gap-3 text-sm">
-                <span className="text-zinc-400">
-                  Closeness to target <b className="text-white font-mono">{targetProximity}%</b>
-                  {proximityDelta === "hotter" && <span className="text-emerald-400"> · warmer</span>}
-                  {proximityDelta === "colder" && <span className="text-sky-400"> · colder</span>}
-                </span>
-                <div className="w-16 sm:w-24 bg-zinc-800 h-1.5 rounded-full overflow-hidden shrink-0">
-                  <div className="h-full bg-zinc-200 transition-all duration-300" style={{ width: `${Math.min(100, targetProximity)}%` }}></div>
-                </div>
-              </div>
-            </div>
-
-            {/* Middle: path (flex-1 min-h-0 overflow-y-auto) */}
-            <div className="flex-1 min-h-0 overflow-y-auto pr-1 space-y-1.5 mb-2" ref={scrollRef}>
-              <div className="flex items-center justify-between text-xs text-zinc-400 mb-1 sticky top-0 bg-zinc-950/95 py-0.5 z-10 backdrop-blur-sm">
-                <span>Your path</span>
-                <span>
-                  Misses <b className="text-zinc-200 font-mono">{failedAttempts}</b>
-                </span>
-              </div>
-
-              {history.map((step, idx) => {
-                const isStart = idx === 0;
-                const isTarget = step.word.toLowerCase() === targetWord.toLowerCase();
-                return (
-                  <div
-                    key={idx}
-                    className={`flex items-center justify-between px-3 py-2 rounded-lg border text-sm transition ${
-                      isTarget ? "bg-zinc-200 text-black border-transparent font-semibold" : "bg-zinc-900/30 border-zinc-800/30 text-zinc-200"
-                    }`}
-                  >
-                    <div className="flex items-center gap-2.5">
-                      <span className={`font-mono text-xs ${isTarget ? "text-zinc-600" : "text-zinc-500"}`}>{idx + 1}</span>
-                      <span className="capitalize font-medium">{step.word}</span>
-                    </div>
-                    <span className={`text-xs ${isTarget ? "text-zinc-700 font-semibold" : "text-zinc-400"} ${isStart ? "" : "font-mono"}`}>
-                      {isStart ? "Start" : `${step.relatednessToPrevious}%`}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-
-            {/* Bottom pinned block: feedback + input, or the result card (shrink-0) */}
-            <div className="shrink-0 space-y-2 pt-2 border-t border-zinc-900/80">
-              {feedback && (
-                <div
-                  className={`px-3 py-2 rounded-xl text-sm border flex items-center justify-between gap-3 ${
-                    feedback.type === "success"
-                      ? "bg-emerald-950/30 border-emerald-900/40 text-emerald-300"
-                      : feedback.type === "warning"
-                      ? "bg-amber-950/30 border-amber-900/40 text-amber-300"
-                      : "bg-rose-950/30 border-rose-900/40 text-rose-300"
-                  }`}
-                >
-                  <span className="truncate">{feedback.message}</span>
-                  {feedback.score !== undefined && <span className="font-mono font-semibold shrink-0">{feedback.score}%</span>}
-                </div>
-              )}
-
-              {isGameOver ? (
-                <div className="p-4 sm:p-5 bg-zinc-900/80 border border-zinc-800/40 rounded-xl text-center space-y-3 max-h-[55dvh] overflow-y-auto">
-                  <div className="space-y-1">
-                    <p className="text-base font-semibold text-white">{gameOverTitle}</p>
+      {isGameOver && !resultDismissed && targetPair && (
+        <div className="fixed inset-0 z-40 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4">
+                <div className="w-full max-w-md max-h-full overflow-y-auto bg-zinc-950 border border-zinc-800 rounded-2xl p-5 sm:p-6 text-center space-y-4 animate-rise-in">
+                  <div className="space-y-1.5">
+                    <p className="text-xl font-semibold text-white">{gameOverTitle}</p>
                     {finalScore && !gaveUp ? (
                       <>
-                        <p className="text-4xl font-bold font-mono tracking-tight text-white">{finalScore.totalScore.toLocaleString()}</p>
+                        <p className="text-5xl font-bold font-mono tracking-tight text-white pt-1">{finalScore.totalScore.toLocaleString()}</p>
+                        <p className="text-2xl tracking-widest" aria-label="Link strengths">{linkSquares(history)}</p>
                         <p className="text-sm text-zinc-300">
                           Rank {finalScore.rank} · {finalScore.title}
                         </p>
@@ -2015,13 +1893,197 @@ export default function GamePage() {
                       </button>
                     )}
                   </div>
-                  <button onClick={goHome} className="text-sm text-zinc-400 hover:text-white transition">
-                    Back to menu
+                  <div className="flex items-center justify-center gap-4 text-sm">
+                    <button onClick={() => setResultDismissed(true)} className="text-zinc-400 hover:text-white transition">
+                      View path
+                    </button>
+                    <span className="text-zinc-700">·</span>
+                    <button onClick={goHome} className="text-zinc-400 hover:text-white transition">
+                      Back to menu
+                    </button>
+                  </div>
+                </div>
+        </div>
+      )}
+      {/* Header (shrink-0) */}
+      <header className="w-full max-w-xl flex items-center justify-between gap-2 py-1.5 sm:py-2 border-b border-zinc-800/40 mb-2 sm:mb-3 shrink-0">
+        <div className="flex items-center gap-3 min-w-0">
+          <button onClick={goHome} className="text-sm text-zinc-400 hover:text-white transition-colors shrink-0">
+            ← Exit
+          </button>
+          <span className="text-sm font-medium text-zinc-200 truncate">{modeLabel}</span>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          {canGiveUp && (
+            <button onClick={handleGiveUp} className="text-sm text-zinc-400 hover:text-white px-2 py-1 transition">
+              Give up
+            </button>
+          )}
+          {helpButton}
+        </div>
+      </header>
+
+      {/* Main Game Container */}
+      <main className="w-full max-w-xl flex-1 flex flex-col justify-between bg-zinc-950 border border-zinc-800/40 rounded-xl sm:rounded-2xl p-3 sm:p-5 shadow-xl relative min-h-0 overflow-hidden">
+        {pairError ? (
+          <div className="flex-1 flex flex-col items-center justify-center min-h-0 space-y-3 text-center">
+            <p className="text-sm text-rose-400">{pairError}</p>
+            <button
+              onClick={() => initGame(gameType === "daily" ? "daily" : "solo")}
+              className="px-5 py-2 bg-white text-black font-semibold rounded-xl text-sm hover:bg-zinc-200 transition-colors"
+            >
+              Retry
+            </button>
+          </div>
+        ) : loadingPair || !targetPair ? (
+          <div className="flex-1 flex flex-col items-center justify-center min-h-0 space-y-3">
+            <div className="w-6 h-6 border-2 border-zinc-700 border-t-white rounded-full animate-spin"></div>
+            <p className="text-sm text-zinc-400">Picking your words…</p>
+          </div>
+        ) : (
+          <>
+            {/* Top pinned block: Opponent + Goal Card + Closeness (shrink-0) */}
+            <div className="shrink-0 space-y-2 mb-2">
+              {gameType === "peer" && opponent && (
+                <div className="p-2.5 bg-zinc-900 border border-zinc-800 rounded-xl space-y-1.5">
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="font-semibold text-zinc-200 flex items-center gap-2 min-w-0">
+                      <span className={`w-2 h-2 rounded-full shrink-0 ${opponentConnected ? "bg-emerald-400" : "bg-zinc-600 animate-pulse"}`}></span>
+                      <span className="truncate">{opponent.name}</span>
+                    </span>
+                    <span className="text-zinc-400 text-xs shrink-0">
+                      {!opponentConnected
+                        ? "Connecting…"
+                        : `${opponent.steps.length} ${opponent.steps.length === 1 ? "step" : "steps"}${opponent.hasWon ? " · finished" : ""}`}
+                    </span>
+                  </div>
+                  {opponent.steps.length > 0 && (
+                    <div className="flex items-center gap-1.5 overflow-x-auto">
+                      {opponent.steps.map((st, i) => (
+                        <span
+                          key={i}
+                          className={`px-2 py-0.5 rounded-md text-xs font-mono border bg-zinc-950 shrink-0 ${TIER_STYLES[linkTier(st.relatedness)].chip}`}
+                        >
+                          {st.relatedness}%
+                        </span>
+                      ))}
+                      <span className="text-xs text-zinc-500 shrink-0 pl-1">words hidden</span>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Start → Target */}
+              <div className="bg-zinc-900/40 border border-zinc-800/40 rounded-xl p-2.5 sm:p-3.5">
+                <div className="flex items-center justify-between gap-2 sm:gap-3">
+                  {[
+                    { label: "Start", word: targetPair.source },
+                    { label: "Target", word: targetPair.target },
+                  ].map((card, i) => (
+                    <div key={card.label} className="contents">
+                      {i === 1 && <span className="text-base text-zinc-500 shrink-0">→</span>}
+                      <button
+                        type="button"
+                        onClick={() => handleToggleDefinition(card.word)}
+                        className={`flex-1 min-w-0 rounded-xl p-2 sm:p-2.5 text-center transition select-none border active:scale-[0.98] ${
+                          activeDefinition?.word === card.word.toLowerCase()
+                            ? "bg-zinc-900 border-zinc-600"
+                            : "bg-zinc-950/60 border-zinc-800/40 hover:border-zinc-700"
+                        }`}
+                        aria-label={`Definition of ${card.word}`}
+                      >
+                        <span className="text-xs text-zinc-400 block">{card.label}</span>
+                        <span className="text-lg sm:text-xl font-bold tracking-tight text-white capitalize truncate block">{card.word}</span>
+                      </button>
+                    </div>
+                  ))}
+                </div>
+
+                {!definitionHintSeen && !activeDefinition && (
+                  <p className="text-xs text-zinc-500 text-center mt-2">Tap a word to see its meaning</p>
+                )}
+                {activeDefinition && (
+                  <div className="mt-2 pt-2 border-t border-zinc-800 text-left">
+                    <div className="flex items-center justify-between gap-2 mb-1">
+                      <div className="flex items-center gap-2">
+                        <span className="font-semibold text-white capitalize text-sm">{activeDefinition.word}</span>
+                        {activeDefinition.partOfSpeech && <span className="text-xs italic text-zinc-400">{activeDefinition.partOfSpeech}</span>}
+                        {activeDefinition.loading && <span className="w-3 h-3 border border-zinc-500 border-t-white rounded-full animate-spin"></span>}
+                      </div>
+                      <button type="button" onClick={() => setActiveDefinition(null)} className="text-zinc-500 hover:text-white text-sm px-1.5" aria-label="Close definition">
+                        ✕
+                      </button>
+                    </div>
+                    <p className="text-zinc-300 text-sm leading-relaxed max-h-20 overflow-y-auto">{activeDefinition.definition}</p>
+                  </div>
+                )}
+              </div>
+
+              {/* Closeness to target */}
+              <div className="px-3 sm:px-4 py-2.5 bg-zinc-900/40 border border-zinc-800/30 rounded-xl space-y-2 text-sm">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-zinc-400">Closeness to target</span>
+                  <span>
+                    {proximityDelta === "hotter" && <span className="text-emerald-400 mr-2">↑ warmer</span>}
+                    {proximityDelta === "colder" && <span className="text-sky-400 mr-2">↓ colder</span>}
+                    <b className="text-white font-mono">{targetProximity}%</b>
+                  </span>
+                </div>
+                <div className="w-full bg-zinc-800 h-2 rounded-full overflow-hidden">
+                  <div
+                    className="h-full rounded-full transition-all duration-500"
+                    style={{ width: `${Math.min(100, targetProximity)}%`, background: "var(--accent)" }}
+                  ></div>
+                </div>
+              </div>
+            </div>
+
+            {/* Middle: path (flex-1 min-h-0 overflow-y-auto) */}
+            <div className="shrink-0 flex items-center justify-between text-xs text-zinc-400 mb-1.5">
+                <span>
+                  Your path · {Math.max(0, history.length - 1)} {history.length - 1 === 1 ? "step" : "steps"}
+                </span>
+                <span>
+                  Misses <b className="text-zinc-200 font-mono">{failedAttempts}</b>
+                </span>
+              </div>
+            <div className="flex-1 min-h-0 overflow-y-auto pr-1 mb-2" ref={scrollRef}>
+
+              <BridgePath history={history} targetWord={targetWord} />
+            </div>
+
+            {/* Bottom pinned block: feedback + input, or the result card (shrink-0) */}
+            <div className="shrink-0 space-y-2 pt-2 border-t border-zinc-900/80">
+              {feedback && (
+                <div
+                  className={`px-3 py-2 rounded-xl text-sm border flex items-center justify-between gap-3 ${
+                    feedback.type === "success"
+                      ? "bg-emerald-950/30 border-emerald-900/40 text-emerald-300"
+                      : feedback.type === "warning"
+                      ? "bg-amber-950/30 border-amber-900/40 text-amber-300"
+                      : "bg-rose-950/30 border-rose-900/40 text-rose-300"
+                  }`}
+                >
+                  <span className="truncate">{feedback.message}</span>
+                  {feedback.score !== undefined && <span className="font-mono font-semibold shrink-0">{feedback.score}%</span>}
+                </div>
+              )}
+
+              {isGameOver ? (
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setResultDismissed(false)}
+                    className="flex-1 py-3 bg-white text-black font-semibold rounded-xl text-sm hover:bg-zinc-200 transition-colors"
+                  >
+                    Show result
+                  </button>
+                  <button onClick={goHome} className="px-4 py-3 text-sm text-zinc-300 border border-zinc-700 rounded-xl hover:text-white transition">
+                    Menu
                   </button>
                 </div>
               ) : (
                 <form onSubmit={handleStepSubmit}>
-                  <div className="flex gap-2">
+                  <div className={`flex gap-2 ${shakeInput ? "animate-shake" : ""}`}>
                     <input
                       ref={inputRef}
                       type="text"
@@ -2045,7 +2107,7 @@ export default function GamePage() {
                       autoCapitalize="none"
                       autoCorrect="off"
                       spellCheck={false}
-                      className="flex-1 min-w-0 px-3.5 py-3 bg-zinc-900/60 border border-zinc-800/50 rounded-xl text-white placeholder-zinc-500 focus:outline-none focus:border-zinc-600 font-medium text-base transition-colors"
+                      className="flex-1 min-w-0 px-3.5 py-3 bg-zinc-900/60 border border-zinc-800/50 rounded-xl text-white placeholder-zinc-500 focus:outline-none focus:border-[var(--accent)] font-medium text-base transition-colors"
                     />
                     <button
                       type="submit"

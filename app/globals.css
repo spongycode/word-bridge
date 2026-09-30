@@ -41,3 +41,30 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: #3f3f46;
 }
+
+/* Brand accent (logo, closeness bar, focus) */
+:root {
+  --accent: #a78bfa;
+}
+
+/* New path node pops in; a miss shakes the input */
+@keyframes pop-in {
+  0% { opacity: 0; transform: translateY(6px) scale(0.96); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  20%, 60% { transform: translateX(-6px); }
+  40%, 80% { transform: translateX(6px); }
+}
+@keyframes rise-in {
+  0% { opacity: 0; transform: translateY(24px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+.animate-pop-in { animation: pop-in 260ms ease-out both; }
+.animate-shake { animation: shake 360ms ease-in-out; }
+.animate-rise-in { animation: rise-in 320ms ease-out both; }
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-pop-in, .animate-shake, .animate-rise-in { animation: none; }
+}
