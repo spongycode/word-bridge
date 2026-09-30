@@ -9,7 +9,7 @@ interface ClosenessGaugeProps {
 const CX = 100;
 const CY = 100;
 const CONNECT_AT = 70; // auto-connect threshold
-// Pink (--opponent): distinct from your violet and the green/yellow/orange link tiers
+// Rose-red (--opponent): reads as "rival", distinct from your violet and the green/yellow/orange link tiers
 const OPPONENT_COLOR = "var(--opponent)";
 const SPRING = "700ms cubic-bezier(.34,1.56,.64,1)";
 
@@ -35,22 +35,17 @@ function arc(from: number, to: number, radius: number) {
 // Rotation for a needle drawn pointing straight up (50%)
 const needleRotation = (pct: number) => (clamp(pct) / 100) * 180 - 90;
 
-// A track plus its progress fill; endDot marks where the fill currently ends
-function Ring({ value, r, w, color, endDot = false }: { value: number; r: number; w: number; color: string; endDot?: boolean }) {
-  const shown = Math.max(0.5, value);
-  const end = polar(shown, r);
+// A track plus its progress fill
+function Ring({ value, r, w, color }: { value: number; r: number; w: number; color: string }) {
   return (
     <>
       <path d={arc(0, 100, r)} stroke="#27272a" strokeWidth={w} fill="none" strokeLinecap="round" />
-      <path d={arc(0, shown, r)} stroke={color} strokeWidth={w} fill="none" strokeLinecap="round" style={{ transition: "d 600ms ease" }} />
-      {endDot && (
-        <circle cx={end.x} cy={end.y} r={w / 2 + 2} fill={color} stroke="#09090b" strokeWidth="3" style={{ transition: "cx 600ms ease, cy 600ms ease" }} />
-      )}
+      <path d={arc(0, Math.max(0.5, value), r)} stroke={color} strokeWidth={w} fill="none" strokeLinecap="round" style={{ transition: "d 600ms ease" }} />
     </>
   );
 }
 
-// Semicircle meter with a spring-y needle; in races the opponent fills a pink outer ring
+// Semicircle meter with a spring-y needle; in races the opponent gets a rose-red outer ring and needle
 export default function ClosenessGauge({ value, delta, opponent }: ClosenessGaugeProps) {
   const you = opponent ? RACE_YOU : SOLO_YOU;
 
@@ -70,7 +65,7 @@ export default function ClosenessGauge({ value, delta, opponent }: ClosenessGaug
         role="img"
         aria-label={`Closeness to target: you ${value}%${opponent ? `, ${opponent.name} ${opponent.value}%` : ""}`}
       >
-        {opponent && <Ring value={opponent.value} r={RACE_OPPONENT.r} w={RACE_OPPONENT.w} color={OPPONENT_COLOR} endDot />}
+        {opponent && <Ring value={opponent.value} r={RACE_OPPONENT.r} w={RACE_OPPONENT.w} color={OPPONENT_COLOR} />}
         <Ring value={value} r={you.r} w={you.w} color="var(--accent)" />
 
         {/* Shared connect zone, one band across both rings */}
@@ -81,6 +76,16 @@ export default function ClosenessGauge({ value, delta, opponent }: ClosenessGaug
           const inner = polar(t, innerEdge - 10);
           return <line key={t} x1={outer.x} y1={outer.y} x2={inner.x} y2={inner.y} stroke="#52525b" strokeWidth="3" />;
         })}
+
+        {/* Opponent needle: slimmer, reaches their outer ring, drawn under yours */}
+        {opponent && (
+          <g style={{ transform: `rotate(${needleRotation(opponent.value)}deg)`, transformOrigin: `${CX}px ${CY}px`, transition: `transform ${SPRING}` }}>
+            <path
+              d={`M ${CX - 5} ${CY} L ${CX} ${CY - (RACE_OPPONENT.r - RACE_OPPONENT.w / 2) + 2} L ${CX + 5} ${CY} Z`}
+              fill={OPPONENT_COLOR}
+            />
+          </g>
+        )}
 
         {/* Your needle */}
         <g style={{ transform: `rotate(${needleRotation(value)}deg)`, transformOrigin: `${CX}px ${CY}px`, transition: `transform ${SPRING}` }}>

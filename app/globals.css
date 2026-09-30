@@ -45,7 +45,7 @@ body {
 /* Brand accent (logo, closeness bar, focus) */
 :root {
   --accent: #a78bfa;
-  --opponent: #f472b6; /* race opponent (gauge needle, name) */
+  --opponent: #f43f5e; /* race opponent (gauge needle, name) */
 }
 
 /* New path node pops in; a miss shakes the input */
