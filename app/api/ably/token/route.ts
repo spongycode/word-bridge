@@ -21,11 +21,12 @@ export async function GET(request: NextRequest) {
     const client = new Ably.Rest(apiKey);
     const tokenRequestData = await client.auth.createTokenRequest({
       clientId,
-      // Game rooms, plus a private inbox only this tab can read (matchmaking notifications).
+      // Game rooms, plus a private per-player inbox (match found, race invites) that only
+      // this identity can read and only the server can write to.
       // Ably wildcards only match a whole namespace ("room:*"), so rooms and inboxes are separate namespaces.
       capability: JSON.stringify({
         "room:*": ["publish", "subscribe", "history"],
-        [`inbox:${clientId}`]: ["subscribe"],
+        [`inbox:${identity}`]: ["subscribe"],
       }),
     });
 

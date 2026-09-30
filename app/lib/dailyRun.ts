@@ -30,6 +30,14 @@ export interface MatchFound {
   targetPair: WordPair;
   opponentClientId: string;
   opponentName: string;
+  forClientId?: string; // set on inbox notices: the queued tab that should act on it
+}
+
+// Sent to a player's inbox when a past opponent taps "Race again"
+export interface RaceInvite {
+  roomCode: string;
+  fromName: string;
+  fromIdentity: string;
 }
 
 export interface LeaderboardEntry {

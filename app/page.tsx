@@ -20,7 +20,7 @@ import {
   StepRecord,
 } from "./lib/player";
 import { useProfile } from "./lib/supabase/profile";
-import type { DailyRunState, MatchFound } from "./lib/dailyRun";
+import type { DailyRunState, MatchFound, RaceInvite } from "./lib/dailyRun";
 import PlayerIdentity from "./components/PlayerIdentity";
 import DailyLeaderboard from "./components/DailyLeaderboard";
 import RulesSheet from "./components/RulesSheet";
@@ -65,6 +65,7 @@ export default function GamePage() {
   // Random matchmaking: "searching" while queued; opponentConnected once they appear in the room
   const [searching, setSearching] = useState(false);
   const [opponentConnected, setOpponentConnected] = useState(true);
+  const [pendingInvite, setPendingInvite] = useState<RaceInvite | null>(null);
 
   // Game state
   const [targetPair, setTargetPair] = useState<WordPair | null>(null);
@@ -531,7 +532,9 @@ export default function GamePage() {
       myUsername: usernameRef.current,
       mySteps: Math.max(0, historyRef.current.length - 1),
       myPath: historyRef.current.map((s) => s.word),
+      myStepScores: historyRef.current.slice(1).map((s) => s.relatednessToPrevious),
       opponentName: opp?.name || "Opponent",
+      opponentIdentity: opp?.clientId ? identityOf(opp.clientId) : undefined,
       opponentSteps: oppPath ? oppPath.length - 1 : undefined,
       opponentPath: oppPath,
       result,
@@ -737,14 +740,6 @@ export default function GamePage() {
       clearInterval(searchTimerRef.current);
       searchTimerRef.current = null;
     }
-    const inbox = inboxRef.current;
-    if (inbox) {
-      try {
-        inbox.unsubscribe();
-        inbox.detach().catch(() => {});
-      } catch {}
-    }
-    inboxRef.current = null;
   };
 
   const cancelSearch = () => {
@@ -778,6 +773,42 @@ export default function GamePage() {
     beginPeerRound(m.targetPair, { clientId: m.opponentClientId, name: m.opponentName, steps: [], hasWon: false }, true);
   };
 
+  // Private per-player inbox, live while the app is open: "matched" (random queue) and "invite" (Race again)
+  const inboxHandlerRef = useRef<(msg: any) => void>(() => {});
+  inboxHandlerRef.current = (msg: any) => {
+    if (msg.name === "matched") {
+      const m = msg.data as MatchFound;
+      // Only the tab that queued acts; the player's other tabs ignore it
+      if (m.forClientId === myIdRef.current) startMatchFromQueue(m);
+    } else if (msg.name === "invite") {
+      setPendingInvite(msg.data as RaceInvite);
+    }
+  };
+  useEffect(() => {
+    if (authLoading) return;
+    let cancelled = false;
+    let inbox: any = null;
+    connectAbly()
+      .then(({ ably, clientId }) => {
+        if (cancelled) return;
+        myIdRef.current = clientId;
+        inbox = ably.channels.get(`inbox:${identityOf(clientId)}`);
+        inboxRef.current = inbox;
+        inbox.subscribe((msg: any) => inboxHandlerRef.current(msg));
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+      if (inbox) {
+        try {
+          inbox.unsubscribe();
+          inbox.detach().catch(() => {});
+        } catch {}
+      }
+      inboxRef.current = null;
+    };
+  }, [user?.id, authLoading]);
+
   // Leave the queue if the tab closes mid-search so nobody gets matched with a ghost
   useEffect(() => {
     const onPageHide = () => {
@@ -802,12 +833,7 @@ export default function GamePage() {
       return;
     }
 
-    // Private inbox: the server posts "matched" here when someone pairs with us
-    const { ably } = await connectAbly();
-    const inbox = ably.channels.get(`inbox:${myId}`);
-    inboxRef.current = inbox;
-    inbox.subscribe("matched", (msg: any) => startMatchFromQueue(msg.data as MatchFound));
-
+    // The always-on inbox (see below) delivers "matched" when someone pairs with us
     searchingRef.current = true;
     setSearching(true);
     goneCountRef.current = 0;
@@ -903,7 +929,8 @@ export default function GamePage() {
   };
 
   // Peer Multiplayer Setup
-  const handleHostRoom = async () => {
+  // onRoomReady runs once the room is live (used by "Race again" to send the invite)
+  const handleHostRoom = async (onRoomReady?: (code: string, myId: string) => void) => {
     cancelSearch();
     leaveChannel();
     const code = Math.random().toString(36).substring(2, 6).toUpperCase();
@@ -949,6 +976,7 @@ export default function GamePage() {
     });
 
     subscribeGameEvents(channel);
+    onRoomReady?.(code, myId);
 
     try {
       const res = await fetch("/api/pair");
@@ -981,6 +1009,34 @@ export default function GamePage() {
     };
     setPendingGuest(null);
     beginPeerRound(pair, opp);
+  };
+
+  // "Race again": open a friend room and ping the past opponent's inbox
+  const raceAgain = (item: MatchHistoryItem) => {
+    if (!item.opponentIdentity) return;
+    setLobbyTab("lobby");
+    handleHostRoom(async (code, myId) => {
+      try {
+        const res = await fetch("/api/invite", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ clientId: myId, toIdentity: item.opponentIdentity, roomCode: code, name: usernameRef.current }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Couldn't send the invite");
+        setFeedback({ type: "success", message: `Invite sent to ${item.opponentName}. They'll join if they have WordBridge open, or share the link below.` });
+      } catch (err: any) {
+        setFeedback({ type: "error", message: `${err?.message || "Couldn't send the invite"}. Share the link below instead.` });
+      }
+    });
+  };
+
+  const acceptInvite = () => {
+    const invite = pendingInvite;
+    if (!invite) return;
+    setPendingInvite(null);
+    setJoinCodeInput(invite.roomCode);
+    handleJoinRoom(invite.roomCode);
   };
 
   // Anyone with the room code or link was invited, so accept the first valid request automatically
@@ -1388,6 +1444,22 @@ export default function GamePage() {
 
   const isGameOver = hasWon || opponentWon || gaveUp;
   const rulesSheet = <RulesSheet open={showRules} onClose={closeRules} firstVisit={firstVisit} />;
+  // Race invite toast; held back while you're mid-game
+  const inviteBanner = pendingInvite && !(view === "playing" && !isGameOver) && (
+    <div className="fixed top-3 inset-x-3 z-50 flex justify-center pointer-events-none">
+      <div role="alert" className="pointer-events-auto w-full max-w-md bg-zinc-900 border border-zinc-700 rounded-2xl p-3.5 shadow-2xl flex items-center gap-3 animate-rise-in">
+        <p className="flex-1 min-w-0 text-sm text-zinc-200">
+          <span className="font-semibold text-white">{pendingInvite.fromName}</span> wants a rematch
+        </p>
+        <button onClick={acceptInvite} className="shrink-0 px-3.5 py-1.5 bg-white text-black font-semibold rounded-lg text-sm hover:bg-zinc-200 transition">
+          Join
+        </button>
+        <button onClick={() => setPendingInvite(null)} aria-label="Dismiss invite" className="shrink-0 text-zinc-400 hover:text-white text-sm px-1.5">
+          ✕
+        </button>
+      </div>
+    </div>
+  );
   const helpButton = (
     <button
       onClick={() => setShowRules(true)}
@@ -1407,6 +1479,7 @@ export default function GamePage() {
     return (
       <div className="h-full overflow-y-auto bg-black text-zinc-100 selection:bg-zinc-800">
         {rulesSheet}
+        {inviteBanner}
         <div className="min-h-full flex flex-col items-center justify-center p-5">
           <div className="w-full max-w-md space-y-6">
             {/* Account header */}
@@ -1536,6 +1609,7 @@ export default function GamePage() {
     return (
       <div className="h-full overflow-y-auto bg-black text-zinc-100">
         {rulesSheet}
+        {inviteBanner}
         <div className="min-h-full flex flex-col items-center justify-center p-4 sm:p-6">
           <div className="w-full max-w-md bg-zinc-950 border border-zinc-800 rounded-2xl p-5 sm:p-6 space-y-4">
             <div className="flex items-center justify-between">
@@ -1562,6 +1636,7 @@ export default function GamePage() {
     return (
       <div className="h-full overflow-y-auto bg-black text-zinc-100">
         {rulesSheet}
+        {inviteBanner}
         <div className="min-h-full flex flex-col items-center justify-center p-4 sm:p-6">
           <div className="w-full max-w-md bg-zinc-950 border border-zinc-800 rounded-2xl p-5 sm:p-6 space-y-5">
             <div className="flex items-center justify-between">
@@ -1664,7 +1739,7 @@ export default function GamePage() {
                       <div className="flex-1 border-t border-zinc-800"></div>
                     </div>
 
-                    <button onClick={handleHostRoom} className="w-full py-3 bg-zinc-900 hover:bg-zinc-800 text-white font-medium rounded-xl text-sm transition border border-zinc-800">
+                    <button onClick={() => handleHostRoom()} className="w-full py-3 bg-zinc-900 hover:bg-zinc-800 text-white font-medium rounded-xl text-sm transition border border-zinc-800">
                       Create a room
                     </button>
                     <form
@@ -1714,7 +1789,7 @@ export default function GamePage() {
                 {matchHistory.length === 0 ? (
                   <p className="py-8 text-center text-sm text-zinc-400">No races yet. Your results will show up here.</p>
                 ) : (
-                  <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
+                  <div className="space-y-2 max-h-[55dvh] overflow-y-auto pr-1">
                     {matchHistory.map((item) => {
                       const isExpanded = expandedMatchId === item.id;
                       const isWon = item.result === "won";
@@ -1736,6 +1811,11 @@ export default function GamePage() {
                               <div className="text-xs text-zinc-500 mt-0.5">
                                 vs {item.opponentName} · {item.mySteps} {item.mySteps === 1 ? "step" : "steps"} · {formatTimeAgo(item.timestamp)}
                               </div>
+                              {item.myStepScores && item.myStepScores.length > 0 && (
+                                <div className="text-sm tracking-wider mt-1" aria-label="Your link strengths">
+                                  {item.myStepScores.map((pct) => TIER_STYLES[linkTier(pct)].square).join("")}
+                                </div>
+                              )}
                             </div>
                             <span className="text-zinc-500 text-xs">{isExpanded ? "▲" : "▼"}</span>
                           </button>
@@ -1750,6 +1830,14 @@ export default function GamePage() {
                                   <span className="text-zinc-200 font-semibold">{item.opponentName}: </span>
                                   {item.opponentPath.join(" → ")}
                                 </p>
+                              )}
+                              {item.opponentIdentity && (
+                                <button
+                                  onClick={() => raceAgain(item)}
+                                  className="mt-1.5 w-full py-2 bg-white text-black font-semibold rounded-lg text-sm hover:bg-zinc-200 transition"
+                                >
+                                  Race {item.opponentName} again
+                                </button>
                               )}
                             </div>
                           )}
@@ -1800,6 +1888,7 @@ export default function GamePage() {
   return (
     <div className="fixed inset-0 overflow-hidden bg-black text-zinc-100 flex flex-col items-center justify-between p-2 sm:p-4 selection:bg-zinc-800 selection:text-white">
       {rulesSheet}
+      {inviteBanner}
       {isGameOver && !resultDismissed && targetPair && (
         <div className="fixed inset-0 z-40 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4">
                 <div className="w-full max-w-md max-h-full overflow-y-auto bg-zinc-950 border border-zinc-800 rounded-2xl p-5 sm:p-6 text-center space-y-4 animate-rise-in">

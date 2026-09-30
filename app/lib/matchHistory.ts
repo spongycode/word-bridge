@@ -22,7 +22,9 @@ function fromRow(r: any): MatchHistoryItem {
     myUsername: r.my_username,
     mySteps: r.my_steps,
     myPath: r.my_path,
+    myStepScores: r.my_step_scores ?? undefined,
     opponentName: r.opponent_name,
+    opponentIdentity: r.opponent_identity ?? undefined,
     opponentSteps: r.opponent_steps ?? undefined,
     opponentPath: r.opponent_path ?? undefined,
     result: r.result,
@@ -54,23 +56,28 @@ export async function loadMatchHistory(user: User | null): Promise<MatchHistoryI
 export async function recordMatch(user: User | null, item: NewMatch): Promise<void> {
   const db = cloud(user);
   if (!db || !user) return saveLocal(item);
-  const { error } = await db.from("match_results").upsert(
-    {
-      user_id: user.id,
-      match_key: item.matchKey,
-      room_code: item.roomCode,
-      source_word: item.sourceWord,
-      target_word: item.targetWord,
-      my_username: item.myUsername,
-      my_steps: item.mySteps,
-      my_path: item.myPath,
-      opponent_name: item.opponentName,
-      opponent_steps: item.opponentSteps ?? null,
-      opponent_path: item.opponentPath ?? null,
-      result: item.result,
-    },
-    { onConflict: "user_id,match_key" }
-  );
+  const row: Record<string, unknown> = {
+    user_id: user.id,
+    match_key: item.matchKey,
+    room_code: item.roomCode,
+    source_word: item.sourceWord,
+    target_word: item.targetWord,
+    my_username: item.myUsername,
+    my_steps: item.mySteps,
+    my_path: item.myPath,
+    opponent_name: item.opponentName,
+    opponent_steps: item.opponentSteps ?? null,
+    opponent_path: item.opponentPath ?? null,
+    result: item.result,
+    my_step_scores: item.myStepScores ?? null,
+    opponent_identity: item.opponentIdentity ?? null,
+  };
+  let { error } = await db.from("match_results").upsert(row, { onConflict: "user_id,match_key" });
+  // Before migration 0004 the detail columns don't exist; save the core record anyway
+  if (error?.code === "PGRST204") {
+    const { my_step_scores: _s, opponent_identity: _o, ...core } = row;
+    ({ error } = await db.from("match_results").upsert(core, { onConflict: "user_id,match_key" }));
+  }
   if (error) console.error("Match save failed:", error.message);
 }
 

@@ -43,7 +43,9 @@ export interface MatchHistoryItem {
   myUsername: string;
   mySteps: number;
   myPath: string[];
+  myStepScores?: number[]; // link strength per step (for colored squares)
   opponentName: string;
+  opponentIdentity?: string; // realtime identity, used for "Race again" invites
   opponentSteps?: number;
   opponentPath?: string[];
   result: "won" | "lost" | "draw" | "abandoned";

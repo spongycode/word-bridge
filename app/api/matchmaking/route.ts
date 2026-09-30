@@ -98,7 +98,10 @@ export async function POST(request: NextRequest) {
 
   try {
     const ably = new Ably.Rest(ablyKey);
-    await ably.channels.get(`inbox:${row.opponent_client_id}`).publish("matched", forHost);
+    // Inboxes are per player; forClientId tells the waiting tab (not their other tabs) to start
+    await ably.channels
+      .get(`inbox:${row.opponent_identity}`)
+      .publish("matched", { ...forHost, forClientId: row.opponent_client_id });
   } catch (err) {
     console.error("Failed to notify matched opponent:", err);
     return NextResponse.json({ error: "Could not reach your opponent. Try again." }, { status: 502 });
