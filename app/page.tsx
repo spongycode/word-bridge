@@ -2221,7 +2221,7 @@ export default function GamePage() {
                       ) : !opponentConnected ? (
                         "Connecting…"
                       ) : opponentPulse?.kind === "miss" ? (
-                        <span className="text-rose-300 font-medium">✗ missed a word</span>
+                        <span className="text-rose-300 font-medium">missed a word</span>
                       ) : opponentPulse?.kind === "step" ? (
                         <span className="text-rose-300 font-semibold">+1 step!</span>
                       ) : opponentTyping && !opponent.hasWon ? (
