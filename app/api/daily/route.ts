@@ -6,6 +6,8 @@ import { getDailyPuzzle } from "@/app/lib/daily";
 import { evaluateStep, validateCandidate, EvaluationError, STEP_THRESHOLD } from "@/app/lib/typesafe";
 import { calculateGameScore } from "@/app/lib/scoring";
 import type { DailyRunState } from "@/app/lib/dailyRun";
+import { getUtcDayString } from "@/app/lib/vocabulary";
+import { createTimer } from "@/app/lib/timing";
 
 export const dynamic = "force-dynamic";
 
@@ -35,38 +37,54 @@ async function bestPathToday(admin: any, day: string): Promise<string[] | null> 
 
 // GET: today's puzzle plus the signed-in player's ranked run (if any)
 export async function GET() {
-  const puzzle = await getDailyPuzzle();
-  const userId = await getSessionUserId();
+  const timer = createTimer();
+  const userId = await timer.time("auth", getSessionUserId());
   const admin = getSupabaseAdmin();
 
-  let run: DailyRunState | null = null;
-  if (userId && admin) {
-    const { data } = await admin
-      .from("daily_runs")
-      .select("*")
-      .eq("user_id", userId)
-      .eq("day", puzzle.day)
-      .maybeSingle();
-    if (data) run = toRunState(data);
-  }
+  // Puzzle (usually cached in memory) and the player's run are fetched in parallel
+  const [puzzle, runRow] = await timer.time(
+    "db",
+    Promise.all([
+      getDailyPuzzle(),
+      userId && admin
+        ? admin.from("daily_runs").select("*").eq("user_id", userId).eq("day", getUtcDayString()).maybeSingle().then((r) => r.data)
+        : Promise.resolve(null),
+    ])
+  );
 
-  return NextResponse.json({ puzzle, run, ranked: Boolean(userId && admin) });
+  const run: DailyRunState | null = runRow ? toRunState(runRow) : null;
+  return NextResponse.json({ puzzle, run, ranked: Boolean(userId && admin) }, { headers: { "Server-Timing": timer.header() } });
 }
 
 // POST { word }: server-authoritative step for the ranked daily run
 export async function POST(req: Request) {
-  try {
-    const userId = await getSessionUserId();
-    if (!userId) return NextResponse.json({ error: "Sign in to play the ranked daily." }, { status: 401 });
+  const timer = createTimer();
+  const respond = (body: unknown, status = 200) =>
+    NextResponse.json(body, { status, headers: { "Server-Timing": timer.header() } });
 
-    const limited = await enforceRateLimit(`user:${userId}`);
-    if (limited) return limited;
+  try {
+    const userId = await timer.time("auth", getSessionUserId());
+    if (!userId) return respond({ error: "Sign in to play the ranked daily." }, 401);
 
     const admin = getSupabaseAdmin();
-    if (!admin) return NextResponse.json({ error: "Leaderboard is not configured on the server." }, { status: 500 });
+    if (!admin) return respond({ error: "Leaderboard is not configured on the server." }, 500);
 
     const body = await req.json();
-    const puzzle = await getDailyPuzzle();
+    const day = getUtcDayString();
+
+    // One parallel round: rate limit, today's puzzle (usually cached), and the player's run
+    const [limited, puzzle, existingRun] = await timer.time(
+      "db",
+      Promise.all([
+        enforceRateLimit(`user:${userId}`),
+        getDailyPuzzle(),
+        admin.from("daily_runs").select("*").eq("user_id", userId).eq("day", day).maybeSingle(),
+      ])
+    );
+    if (limited) {
+      limited.headers.set("Server-Timing", timer.header());
+      return limited;
+    }
 
     // Give up: ends today's ranked run without a score (breaks the streak)
     if (body.action === "give_up") {
@@ -96,46 +114,41 @@ export async function POST(req: Request) {
           .eq("finished", false);
       }
       const { data: row } = await admin.from("daily_runs").select("*").eq("user_id", userId).eq("day", puzzle.day).single();
-      return NextResponse.json({ run: toRunState(row), bestPath: await bestPathToday(admin, puzzle.day) });
+      return respond({ run: toRunState(row), bestPath: await bestPathToday(admin, puzzle.day) });
     }
 
     const candidate = validateCandidate(body.word);
 
-    // Load or create today's run (one attempt per player per day)
-    let { data: row } = await admin
-      .from("daily_runs")
-      .select("*")
-      .eq("user_id", userId)
-      .eq("day", puzzle.day)
-      .maybeSingle();
-
+    // Use the prefetched run, or create today's run (one attempt per player per day)
+    let row = existingRun.data;
     if (!row) {
-      const { error: insertError } = await admin
-        .from("daily_runs")
-        .upsert(
-          { user_id: userId, day: puzzle.day, path: [puzzle.source], last_proximity: puzzle.baselineScore ?? 0 },
-          { onConflict: "user_id,day", ignoreDuplicates: true }
-        );
+      const { data: created, error: insertError } = await timer.time(
+        "db-create",
+        admin
+          .from("daily_runs")
+          .upsert(
+            { user_id: userId, day: puzzle.day, path: [puzzle.source], last_proximity: puzzle.baselineScore ?? 0 },
+            { onConflict: "user_id,day", ignoreDuplicates: true }
+          )
+          .select("*")
+      );
       if (insertError) throw new EvaluationError(`Could not start daily run: ${insertError.message}`, 500);
-      ({ data: row } = await admin
-        .from("daily_runs")
-        .select("*")
-        .eq("user_id", userId)
-        .eq("day", puzzle.day)
-        .single());
+      row = created?.[0];
+      // A concurrent request created it first
+      if (!row) ({ data: row } = await admin.from("daily_runs").select("*").eq("user_id", userId).eq("day", puzzle.day).single());
     }
 
     if (row.finished) {
-      return NextResponse.json({ error: "You already completed today's challenge." }, { status: 409 });
+      return respond({ error: "You already completed today's challenge." }, 409);
     }
     if (row.path.includes(candidate)) {
-      return NextResponse.json({ error: `"${candidate}" is already in your path.` }, { status: 400 });
+      return respond({ error: `"${candidate}" is already in your path.` }, 400);
     }
 
     const previous: string = row.path[row.path.length - 1];
-    const evaluation = await evaluateStep(previous, candidate, puzzle.target);
+    const evaluation = await timer.time("eval", evaluateStep(previous, candidate, puzzle.target));
     if (!evaluation.isRealWord) {
-      return NextResponse.json({ error: `"${candidate}" is not a recognized word.` }, { status: 400 });
+      return respond({ error: `"${candidate}" is not a recognized word.` }, 400);
     }
 
     const proximity = evaluation.proximity ?? 0;
@@ -172,7 +185,7 @@ export async function POST(req: Request) {
       : null;
 
     // Optimistic concurrency: reject if another request updated the run first
-    const { data: updated, error: updateError } = await admin
+    const { data: updated, error: updateError } = await timer.time("db-save", admin
       .from("daily_runs")
       .update({
         path,
@@ -190,14 +203,14 @@ export async function POST(req: Request) {
       .eq("day", puzzle.day)
       .eq("version", row.version)
       .select("*")
-      .maybeSingle();
+      .maybeSingle());
 
     if (updateError) throw new EvaluationError(updateError.message, 500);
     if (!updated) {
-      return NextResponse.json({ error: "Another move was submitted at the same time. Try again." }, { status: 409 });
+      return respond({ error: "Another move was submitted at the same time. Try again." }, 409);
     }
 
-    return NextResponse.json({
+    return respond({
       accepted,
       relatedness: evaluation.relatedness,
       proximity,
@@ -205,6 +218,6 @@ export async function POST(req: Request) {
     });
   } catch (error: any) {
     const status = error instanceof EvaluationError ? error.status : 500;
-    return NextResponse.json({ error: error?.message || "Internal server error" }, { status });
+    return respond({ error: error?.message || "Internal server error" }, status);
   }
 }

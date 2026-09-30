@@ -3,6 +3,7 @@ import { getSessionUserId } from "@/app/lib/supabase/session";
 import { getSupabaseAdmin } from "@/app/lib/supabase/admin";
 import { getUtcDayString } from "@/app/lib/vocabulary";
 import type { LeaderboardEntry, LeaderboardResponse } from "@/app/lib/dailyRun";
+import { createTimer } from "@/app/lib/timing";
 
 export const dynamic = "force-dynamic";
 
@@ -12,10 +13,12 @@ export async function GET() {
   const admin = getSupabaseAdmin();
   if (!admin) return NextResponse.json({ error: "Leaderboard is not configured on the server." }, { status: 500 });
 
+  const timer = createTimer();
   const day = getUtcDayString();
-  const userId = await getSessionUserId();
 
-  const { data, error } = await admin
+  const [userId, { data, error }] = await timer.time("db", Promise.all([
+    getSessionUserId(),
+    admin
     .from("daily_runs")
     .select("user_id, score, steps, failed_attempts, path, finished_at, profiles(username)")
     .eq("day", day)
@@ -24,7 +27,8 @@ export async function GET() {
     .order("score", { ascending: false })
     .order("steps", { ascending: true })
     .order("finished_at", { ascending: true })
-    .limit(1000);
+    .limit(1000),
+  ]));
 
   if (error) {
     console.error("Leaderboard query failed:", error.message);
@@ -52,5 +56,5 @@ export async function GET() {
     me: ranked.find((e) => e.isMe) ?? null,
     pathsVisible,
   };
-  return NextResponse.json(body);
+  return NextResponse.json(body, { headers: { "Server-Timing": timer.header() } });
 }
