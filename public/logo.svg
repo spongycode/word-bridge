@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 96" role="img" aria-label="WordBridge">
+  <g fill="none" stroke="#8b5cf6" stroke-linecap="round" transform="translate(8 14)">
+    <path d="M4 58 Q46 -6 88 58" stroke-width="9"/>
+    <path d="M4 58 V66 M88 58 V66 M25 38 V58 M46 30 V58 M67 38 V58" stroke-width="6" opacity="0.65"/>
+  </g>
+  <text x="118" y="66" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="54" font-weight="700" letter-spacing="-1.5" fill="#8b5cf6">WordBridge</text>
+</svg>

@@ -1,89 +1,47 @@
-# WordBridge
+<p align="center">
+  <img src="public/logo.svg" alt="WordBridge" width="360">
+</p>
 
-Get from one word to another, one related word at a time.
+<p align="center">
+  <b>Get from one word to another, one related word at a time.</b>
+</p>
 
-You get a **start** word and a distant **target** word. Type a chain of words where each one is at least **70% related** to the previous word (an AI rates it). Reach the target — or any word 70%+ related to it — to complete the bridge. Fewer steps, stronger links, and fewer misses score higher.
+<p align="center">
+  <a href="https://wordbridge-game.vercel.app"><b>▶ Play now</b></a>
+</p>
 
-Live: https://wordbridge-game.vercel.app
+---
+
+## How to play
+
+You get a **start** word and a **target** word that have nothing in common. Build a bridge between them:
+
+> **cat** → pet → vet → **doctor**
+
+- Each word must be at least **70% related** to the one before it.
+- Get close enough to the target and the bridge connects on its own.
+- Fewer steps and stronger links mean a higher score. Misses cost points.
+
+Your links are colored by strength — 🟩 strong, 🟨 good, 🟧 just made it — and the closeness meter tells you when you're getting warmer.
 
 ## Modes
 
-- **Daily puzzle** — the same pair for everyone, new at 00:00 UTC. Signed-in players get one ranked attempt per day, a streak, and a spot on the leaderboard. Moves are validated and scored on the server.
-- **Practice** — unlimited random puzzles (pairs are chosen to be under 30% related).
-- **Race** — 1v1 on the same pair. Find a random opponent or create a room for a friend. You see your opponent's progress (link strengths, closeness to target, typing, misses) but not their words until the end. Rematch, "Race again" invites, and race history included.
+**Daily puzzle** — Everyone gets the same pair, and a new one every day. Sign in for one ranked try, a streak, and a spot on the leaderboard.
 
-## Stack
+**Practice** — Unlimited random puzzles, no pressure.
 
-| Piece | Used for |
-|---|---|
-| [Next.js 16](https://nextjs.org) (App Router), React 19, Tailwind 4, TypeScript | App and API routes |
-| [Supabase](https://supabase.com) (free tier) | Google sign-in, Postgres (profiles, daily runs, leaderboard, race history, matchmaking queue, rate limits) |
-| [Ably](https://ably.com) (free tier) | Realtime race rooms and private per-player inboxes |
-| [Typesafe AI](https://typesafe.ai) (`jev-latest`) | Word relatedness scoring |
-| [Datamuse](https://www.datamuse.com/api/) | Word definitions |
-| [Vercel](https://vercel.com) | Hosting (functions run in `hnd1`, next to the Supabase project in Tokyo) |
+**Race** — Go head to head on the same pair. Get matched with a random player or invite a friend. You can watch your opponent close in, but their words stay hidden until the end.
 
-## Local setup
+## Share your bridge
 
-1. Install dependencies:
-
-   ```bash
-   npm install
-   ```
-
-2. Create `.env.local` (never commit it):
-
-   ```bash
-   TYPESAFE_API_KEY=            # server only
-   ABLY_API_KEY=                # server only; also signs guest cookies
-   NEXT_PUBLIC_SUPABASE_URL=    # https://<project-ref>.supabase.co
-   NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=   # sb_publishable_... (safe in the browser)
-   SUPABASE_SECRET_KEY=         # sb_secret_... server only, bypasses RLS
-   ```
-
-3. Set up Supabase:
-   - Run the SQL files in [`supabase/migrations/`](supabase/migrations) in order (`0001` → `0004`) in the Supabase SQL Editor.
-   - **Authentication → URL Configuration:** add `http://localhost:3000/auth/callback` (and your production `/auth/callback`) to Redirect URLs.
-   - **Authentication → Providers → Google:** enable it with a Google OAuth client (Web application) whose redirect URI is the Supabase callback URL shown there.
-
-4. Run it:
-
-   ```bash
-   npm run dev
-   ```
-
-   Open http://localhost:3000.
-
-The app degrades gracefully: without Supabase keys it runs guest-only (no sign-in, leaderboard, or matchmaking); without a Typesafe key, random pairs fall back to a fixed pair and scoring fails.
-
-## Deploying (Vercel)
-
-- Add the five environment variables above in **Vercel → Settings → Environment Variables**. `NEXT_PUBLIC_*` values are type **Config** (public by design); the other three are **Secret**. Redeploy after changing them — `NEXT_PUBLIC_*` values are baked in at build time.
-- Add the production domain to Supabase Redirect URLs and to the Google OAuth client's Authorized JavaScript origins.
-- [`vercel.json`](vercel.json) pins functions to `hnd1` (Tokyo). If you move the Supabase project, move this region with it.
-
-## Project layout
+Finish the daily and share a spoiler-free result:
 
 ```
-app/
-  page.tsx                 Game UI (home, lobby, leaderboard, game views)
-  components/              BridgePath, ClosenessGauge, RulesSheet, DailyLeaderboard, StatsCard, ...
-  lib/                     Scoring, share text, link tiers, Supabase clients, identity, rate limits, daily logic
-  api/
-    compare/               Score one step (practice / race)
-    daily/                 Ranked daily: puzzle, moves, give up, leaderboard
-    pair/                  Random puzzle pair
-    matchmaking/           Random opponent queue
-    invite/                "Race again" invites
-    ably/token/            Realtime tokens with a server-assigned identity
-    me/stats/              Streak and totals
-  auth/callback/           Google OAuth return
-supabase/migrations/       Database schema (run in order)
-proxy.ts                   Refreshes the Supabase session cookie (Next 16 "proxy", formerly middleware)
+WordBridge #2
+🟩🟨🟩🟧
+4 steps · 1 miss · 8,810 pts
 ```
 
-## Notes
+---
 
-- Paid API calls are rate limited per player (or per IP for guests) via a Postgres function.
-- Realtime identity is issued by the server (Supabase user id or a signed guest cookie) and Ably stamps it on every message, so players can't impersonate each other. Race results are still reported by each client.
-- API responses from `compare`, `daily`, and `daily/leaderboard` include `Server-Timing` headers for latency debugging.
+Want to run it yourself? See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
