@@ -20,12 +20,16 @@ export async function GET() {
     .select("user_id, score, steps, failed_attempts, path, finished_at, profiles(username)")
     .eq("day", day)
     .eq("finished", true)
+    .eq("gave_up", false)
     .order("score", { ascending: false })
     .order("steps", { ascending: true })
     .order("finished_at", { ascending: true })
     .limit(1000);
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (error) {
+    console.error("Leaderboard query failed:", error.message);
+    return NextResponse.json({ error: "Couldn't load the leaderboard. Try again in a moment." }, { status: 500 });
+  }
 
   const rows = data ?? [];
   // Paths are spoilers: only reveal them to players who already finished today

@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "WordBridge",
-  description: "Real-time word association and semantic bridge game",
+  description: "Get from one word to another, one related word at a time. Daily puzzle, practice, and live races.",
 };
 
 export const viewport: Viewport = {

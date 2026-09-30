@@ -14,6 +14,12 @@ export const EVALUATION_LIMITS: Limit[] = [
   { name: "eval-day", limit: 500, windowSeconds: 86400 },
 ];
 
+// Random pairs cost up to 5 evaluation calls each (also used by matchmaking)
+export const PAIR_LIMITS: Limit[] = [
+  { name: "pair-min", limit: 10, windowSeconds: 60 },
+  { name: "pair-day", limit: 150, windowSeconds: 86400 },
+];
+
 export function getClientIp(request: Request): string {
   const forwarded = request.headers.get("x-forwarded-for");
   if (forwarded) return forwarded.split(",")[0].trim();

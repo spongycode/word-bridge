@@ -16,7 +16,21 @@ function toRunState(row: any): DailyRunState {
     failedAttempts: row.failed_attempts,
     lastProximity: row.last_proximity,
     finished: row.finished,
+    gaveUp: row.gave_up ?? false,
   };
+}
+
+// Best finished path today, shown to a player who gives up
+async function bestPathToday(admin: any, day: string): Promise<string[] | null> {
+  const { data } = await admin
+    .from("daily_runs")
+    .select("path")
+    .eq("day", day)
+    .eq("finished", true)
+    .eq("gave_up", false)
+    .order("score", { ascending: false })
+    .limit(1);
+  return data?.[0]?.path ?? null;
 }
 
 // GET: today's puzzle plus the signed-in player's ranked run (if any)
@@ -51,9 +65,41 @@ export async function POST(req: Request) {
     const admin = getSupabaseAdmin();
     if (!admin) return NextResponse.json({ error: "Leaderboard is not configured on the server." }, { status: 500 });
 
-    const { word } = await req.json();
-    const candidate = validateCandidate(word);
+    const body = await req.json();
     const puzzle = await getDailyPuzzle();
+
+    // Give up: ends today's ranked run without a score (breaks the streak)
+    if (body.action === "give_up") {
+      const { data: gaveUp, error } = await admin
+        .from("daily_runs")
+        .upsert(
+          {
+            user_id: userId,
+            day: puzzle.day,
+            path: [puzzle.source],
+            finished: true,
+            gave_up: true,
+            finished_at: new Date().toISOString(),
+          },
+          { onConflict: "user_id,day", ignoreDuplicates: true }
+        )
+        .select("*");
+      if (error) throw new EvaluationError(error.message, 500);
+
+      // Existing unfinished run: mark it given up (finished runs are left untouched)
+      if (!gaveUp || gaveUp.length === 0) {
+        await admin
+          .from("daily_runs")
+          .update({ finished: true, gave_up: true, finished_at: new Date().toISOString() })
+          .eq("user_id", userId)
+          .eq("day", puzzle.day)
+          .eq("finished", false);
+      }
+      const { data: row } = await admin.from("daily_runs").select("*").eq("user_id", userId).eq("day", puzzle.day).single();
+      return NextResponse.json({ run: toRunState(row), bestPath: await bestPathToday(admin, puzzle.day) });
+    }
+
+    const candidate = validateCandidate(body.word);
 
     // Load or create today's run (one attempt per player per day)
     let { data: row } = await admin

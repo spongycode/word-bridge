@@ -1,3 +1,5 @@
+import type { WordPair } from "../domains";
+
 // Shared shape of a daily run as returned to the client
 export interface DailyRunState {
   path: string[];
@@ -5,6 +7,29 @@ export interface DailyRunState {
   failedAttempts: number;
   lastProximity: number;
   finished: boolean;
+  gaveUp: boolean;
+}
+
+export interface PlayerStats {
+  currentStreak: number; // consecutive UTC days with a solved daily, ending today or yesterday
+  maxStreak: number;
+  dailyPlayed: number;
+  dailySolved: number;
+  averageSteps: number | null;
+  bestScore: number | null;
+  solvedToday: boolean;
+  matchWins: number;
+  matchLosses: number;
+}
+
+// Sent by the matchmaking API to both players when a random opponent is found
+export interface MatchFound {
+  roomCode: string;
+  matchId: string;
+  role: "host" | "guest";
+  targetPair: WordPair;
+  opponentClientId: string;
+  opponentName: string;
 }
 
 export interface LeaderboardEntry {

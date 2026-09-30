@@ -11,25 +11,25 @@ interface DailyLeaderboardProps {
 function Row({ entry, showPath }: { entry: LeaderboardEntry; showPath: boolean }) {
   return (
     <div
-      className={`px-2.5 py-1.5 rounded-lg border text-xs font-mono ${
+      className={`px-2.5 py-2 rounded-lg border text-sm ${
         entry.isMe ? "bg-zinc-800/80 border-zinc-600" : "bg-zinc-950 border-zinc-800/40"
       }`}
     >
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">
-          <span className="text-zinc-500 w-6 shrink-0">#{entry.rank}</span>
+          <span className="text-zinc-500 w-7 shrink-0 font-mono">#{entry.rank}</span>
           <span className={`truncate ${entry.isMe ? "text-white font-semibold" : "text-zinc-200"}`}>
             {entry.username}
             {entry.isMe ? " (you)" : ""}
           </span>
         </div>
         <div className="flex items-center gap-3 shrink-0 text-zinc-400">
-          <span>{entry.steps} steps</span>
-          <span className="text-white font-semibold">{entry.score.toLocaleString()}</span>
+          <span className="text-xs">{entry.steps} steps</span>
+          <span className="text-white font-semibold font-mono">{entry.score.toLocaleString()}</span>
         </div>
       </div>
       {showPath && entry.path && (
-        <div className="text-[10px] text-zinc-500 mt-1 break-words whitespace-normal">{entry.path.join(" → ")}</div>
+        <div className="text-xs text-zinc-500 mt-1 break-words whitespace-normal">{entry.path.join(" → ")}</div>
       )}
     </div>
   );
@@ -54,7 +54,7 @@ export default function DailyLeaderboard({ compact = false, refreshKey }: DailyL
     };
   }, [refreshKey]);
 
-  if (error) return <p className="text-xs font-mono text-rose-400">{error}</p>;
+  if (error) return <p className="text-sm text-rose-400">{error}</p>;
   if (!data) {
     return (
       <div className="py-4 flex justify-center">
@@ -68,12 +68,12 @@ export default function DailyLeaderboard({ compact = false, refreshKey }: DailyL
 
   return (
     <div className="space-y-1.5 text-left">
-      <div className="flex items-center justify-between text-[10px] font-mono uppercase tracking-wider text-zinc-400">
-        <span>Daily Leaderboard • {data.day} UTC</span>
-        <span>{data.totalFinished} finished</span>
+      <div className="flex items-center justify-between text-xs text-zinc-400">
+        <span>Top players · {data.day}</span>
+        <span>{data.totalFinished} solved</span>
       </div>
       {entries.length === 0 ? (
-        <p className="text-xs font-mono text-zinc-500 py-2">No one has finished today yet. Be the first!</p>
+        <p className="text-sm text-zinc-400 py-2">No one has solved today&apos;s puzzle yet. Be the first!</p>
       ) : (
         <div className={`space-y-1 ${compact ? "" : "max-h-[60vh] overflow-y-auto pr-1"}`}>
           {entries.map((e) => (
@@ -83,7 +83,7 @@ export default function DailyLeaderboard({ compact = false, refreshKey }: DailyL
         </div>
       )}
       {!compact && !data.pathsVisible && data.entries.length > 0 && (
-        <p className="text-[10px] font-mono text-zinc-600">Paths are revealed after you finish today&apos;s challenge.</p>
+        <p className="text-xs text-zinc-500">Other players&apos; paths appear after you finish today&apos;s puzzle.</p>
       )}
     </div>
   );

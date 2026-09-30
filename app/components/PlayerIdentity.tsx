@@ -4,12 +4,12 @@ import { useState } from "react";
 
 interface PlayerIdentityProps {
   username: string;
-  label: string;
+  signedIn: boolean;
   onSave: (name: string) => Promise<string | null> | string | null;
 }
 
-// Name pill with inline edit; onSave returns an error message or null
-export default function PlayerIdentity({ username, label, onSave }: PlayerIdentityProps) {
+// Name with inline edit for the home header; onSave returns an error message or null
+export default function PlayerIdentity({ username, signedIn, onSave }: PlayerIdentityProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -27,15 +27,15 @@ export default function PlayerIdentity({ username, label, onSave }: PlayerIdenti
     setEditing(false);
   };
 
-  return (
-    <div className="p-2.5 bg-zinc-950 border border-zinc-800/80 rounded-xl space-y-1.5">
-      {editing ? (
+  if (editing) {
+    return (
+      <div className="flex-1 min-w-0 space-y-1">
         <form
           onSubmit={(e) => {
             e.preventDefault();
             save();
           }}
-          className="flex items-center gap-2"
+          className="flex items-center gap-1.5"
         >
           <input
             type="text"
@@ -44,17 +44,13 @@ export default function PlayerIdentity({ username, label, onSave }: PlayerIdenti
               setDraft(e.target.value.replace(/[^A-Za-z0-9_-]/g, ""));
               setError(null);
             }}
-            placeholder="Username"
+            aria-label="Username"
             maxLength={16}
             autoFocus
-            className="flex-1 min-w-0 bg-zinc-900 border border-zinc-700 px-2 py-1 rounded text-white text-xs font-mono focus:outline-none"
+            className="flex-1 min-w-0 bg-zinc-900 border border-zinc-700 px-2.5 py-1.5 rounded-lg text-white text-base focus:outline-none focus:border-zinc-500"
           />
-          <button
-            type="submit"
-            disabled={saving}
-            className="px-2 py-1 bg-white text-black font-semibold rounded text-xs disabled:opacity-50"
-          >
-            {saving ? "..." : "Save"}
+          <button type="submit" disabled={saving} className="px-2.5 py-1.5 bg-white text-black font-semibold rounded-lg text-sm disabled:opacity-50">
+            {saving ? "…" : "Save"}
           </button>
           <button
             type="button"
@@ -62,30 +58,32 @@ export default function PlayerIdentity({ username, label, onSave }: PlayerIdenti
               setEditing(false);
               setError(null);
             }}
-            className="px-2 py-1 bg-zinc-800 text-zinc-400 rounded text-xs"
+            className="px-2 py-1.5 text-zinc-400 hover:text-white text-sm"
           >
             Cancel
           </button>
         </form>
-      ) : (
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2 min-w-0">
-            <span className="w-2 h-2 rounded-full bg-emerald-400 shrink-0"></span>
-            <span className="text-[11px] font-mono text-zinc-400">{label}</span>
-            <span className="text-xs font-semibold text-white font-mono truncate">{username}</span>
-          </div>
-          <button
-            onClick={() => {
-              setDraft(username);
-              setEditing(true);
-            }}
-            className="text-[11px] font-mono text-zinc-400 hover:text-white border border-zinc-800 hover:border-zinc-700 bg-zinc-900 px-2 py-0.5 rounded transition shrink-0"
-          >
-            Edit
-          </button>
-        </div>
-      )}
-      {error && <p className="text-[11px] font-mono text-rose-400">{error}</p>}
-    </div>
+        {error && <p className="text-xs text-rose-400">{error}</p>}
+      </div>
+    );
+  }
+
+  return (
+    <button
+      onClick={() => {
+        setDraft(username);
+        setEditing(true);
+      }}
+      title="Edit your name"
+      className="flex items-center gap-2 min-w-0 text-left group"
+    >
+      <span className={`w-2 h-2 rounded-full shrink-0 ${signedIn ? "bg-emerald-400" : "bg-zinc-500"}`}></span>
+      <span className="min-w-0">
+        <span className="block text-sm font-semibold text-white truncate">
+          {username} <span className="text-zinc-500 group-hover:text-zinc-300 font-normal">✎</span>
+        </span>
+        <span className="block text-xs text-zinc-500">{signedIn ? "Signed in" : "Guest"}</span>
+      </span>
+    </button>
   );
 }
